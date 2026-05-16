@@ -1,5 +1,6 @@
 import logging
 import uuid
+from collections.abc import Sequence
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
@@ -102,6 +103,30 @@ def list_seller_products(db: Session, seller_id: uuid.UUID, limit: int = 20, off
         .offset(offset)
         .limit(limit)
     ).all()
+    return list(products), total_count
+
+
+def list_catalog_products(
+    db: Session,
+    *,
+    product_ids: Sequence[uuid.UUID] | None = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> tuple[list[Product], int]:
+    filters = [
+        Product.status == ProductStatus.MODERATED,
+        Product.deleted.is_(False),
+        Product.skus.any(SKU.active_quantity > 0),
+    ]
+    if product_ids is not None:
+        filters.append(Product.id.in_(product_ids))
+
+    total_count = db.scalar(select(func.count(Product.id)).where(*filters)) or 0
+    query = _product_query().where(*filters).order_by(Product.id)
+    if product_ids is None:
+        query = query.offset(offset).limit(limit)
+
+    products = db.scalars(query).all()
     return list(products), total_count
 
 

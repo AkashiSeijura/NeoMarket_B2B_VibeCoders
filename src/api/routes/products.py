@@ -1,12 +1,22 @@
 import uuid
 
-from fastapi import APIRouter, Depends, Response, status
+from fastapi import APIRouter, Depends, Header, Query, Response, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
-from src.api.deps import CurrentSeller, ProductDetailAccess, get_current_seller, get_product_detail_access
+from src.api.deps import (
+    CurrentSeller,
+    ProductDetailAccess,
+    get_current_seller,
+    get_product_detail_access,
+    oauth2_scheme,
+    unauthorized_response,
+)
+from src.core.config import settings
 from src.db.session import get_db
 from src.schemas.product import (
+    CatalogProductListRead,
+    CatalogProductRead,
     ProductCreate,
     ProductCreateRead,
     ProductListRead,
@@ -26,11 +36,13 @@ from src.services.product_service import (
     delete_product,
     get_public_product_by_id,
     get_seller_product_by_id,
+    list_catalog_products,
     list_seller_products,
     update_product,
 )
 
 router = APIRouter(prefix="/api/v1/products", tags=["Products"])
+public_router = APIRouter(prefix="/api/v1/public/products", tags=["Public Catalog"])
 
 
 def _field_validation_error(field: str, message: str) -> JSONResponse:
@@ -46,6 +58,36 @@ def _error(status_code: int, code: str, message: str) -> JSONResponse:
 
 def _invalid_request(message: str) -> JSONResponse:
     return _error(400, "INVALID_REQUEST", message)
+
+
+def _parse_ids(raw_ids: list[str] | None) -> list[uuid.UUID] | JSONResponse | None:
+    if raw_ids is None:
+        return None
+
+    product_ids: list[uuid.UUID] = []
+    for raw_value in raw_ids:
+        for token in raw_value.split(","):
+            try:
+                product_id = uuid.UUID(token.strip())
+            except ValueError:
+                return _invalid_request("ids must be a comma-separated list of product ids")
+            product_ids.append(product_id)
+    return product_ids
+
+
+def _catalog_product(product) -> CatalogProductRead:
+    return CatalogProductRead.model_validate(
+        {
+            "id": product.id,
+            "title": product.title,
+            "description": product.description,
+            "status": product.status,
+            "category": product.category,
+            "images": product.images,
+            "characteristics": product.characteristics,
+            "skus": [sku for sku in product.skus if sku.active_quantity > 0],
+        }
+    )
 
 
 @router.post("", response_model=ProductCreateRead, status_code=status.HTTP_201_CREATED)
@@ -65,18 +107,70 @@ async def create_product_endpoint(
         return _field_validation_error(exc.field, exc.message)
 
 
+@public_router.get("", response_model=CatalogProductListRead, status_code=status.HTTP_200_OK)
+def list_public_products_endpoint(
+    limit: int = 20,
+    offset: int = 0,
+    ids: list[str] | None = Query(default=None),
+    service_key: str | None = Header(default=None, alias="X-Service-Key"),
+    db: Session = Depends(get_db),
+) -> CatalogProductListRead | JSONResponse:
+    if service_key != settings.b2c_to_b2b_key:
+        return unauthorized_response()
+
+    product_ids = _parse_ids(ids)
+    if isinstance(product_ids, JSONResponse):
+        return product_ids
+
+    bounded_limit = min(max(limit, 1), 100)
+    bounded_offset = max(offset, 0)
+    products, total_count = list_catalog_products(
+        db,
+        product_ids=product_ids,
+        limit=bounded_limit,
+        offset=bounded_offset,
+    )
+    return CatalogProductListRead(
+        items=[_catalog_product(product) for product in products],
+        total_count=total_count,
+        limit=bounded_limit,
+        offset=bounded_offset,
+    )
+
+
+@public_router.post("/batch", response_model=list[CatalogProductRead], status_code=status.HTTP_200_OK)
+def batch_public_products_endpoint(
+    payload: dict[str, list[str]],
+    service_key: str | None = Header(default=None, alias="X-Service-Key"),
+    db: Session = Depends(get_db),
+) -> list[CatalogProductRead] | JSONResponse:
+    if service_key != settings.b2c_to_b2b_key:
+        return unauthorized_response()
+
+    product_ids = _parse_ids(payload.get("product_ids"))
+    if product_ids is None:
+        product_ids = []
+    if isinstance(product_ids, JSONResponse):
+        return product_ids
+
+    products, _ = list_catalog_products(db, product_ids=product_ids)
+    return [_catalog_product(product) for product in products]
+
+
 @router.get("", response_model=ProductListRead, status_code=status.HTTP_200_OK)
 def list_products_endpoint(
     limit: int = 20,
     offset: int = 0,
-    current_seller: CurrentSeller | JSONResponse = Depends(get_current_seller),
+    token: str | None = Depends(oauth2_scheme),
     db: Session = Depends(get_db),
 ) -> ProductListRead | JSONResponse:
+    bounded_limit = min(max(limit, 1), 100)
+    bounded_offset = max(offset, 0)
+
+    current_seller = get_current_seller(token)
     if isinstance(current_seller, JSONResponse):
         return current_seller
 
-    bounded_limit = min(max(limit, 1), 100)
-    bounded_offset = max(offset, 0)
     products, total_count = list_seller_products(
         db,
         current_seller.seller_id,

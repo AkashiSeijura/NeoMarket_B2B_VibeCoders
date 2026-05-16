@@ -177,6 +177,10 @@ class SKUPublicRead(APIModel):
         return self.active_quantity
 
 
+class CatalogProductSKURead(SKUPublicRead):
+    pass
+
+
 class ProductRead(APIModel):
     id: uuid.UUID
     seller_id: uuid.UUID
@@ -286,6 +290,24 @@ class ProductPublicRead(APIModel):
 
 class ProductListRead(APIModel):
     items: list[ProductRead]
+    total_count: int
+    limit: int
+    offset: int
+
+
+class CatalogProductRead(APIModel):
+    id: uuid.UUID
+    title: str
+    description: str
+    status: str
+    category: CategoryOut
+    images: list[ImageOut] = Field(default_factory=list)
+    characteristics: list[CharacteristicOut] = Field(default_factory=list)
+    skus: list[CatalogProductSKURead] = Field(default_factory=list)
+
+
+class CatalogProductListRead(APIModel):
+    items: list[CatalogProductRead]
     total_count: int
     limit: int
     offset: int

@@ -333,3 +333,49 @@ Options considered:
 - Service/model layer validation: keeps ownership, deleted-product, and `MODERATED` status checks next to the invoice write. It has slightly more service code, but the lowest risk of bypass when future API paths are added.
 
 Decision: validate SKU ownership and product eligibility in the service/model layer, with route-local payload parsing only where needed to return canonical `code`/`message` errors instead of FastAPI `422`.
+
+---
+
+# US-B2B-07 Summary
+
+Implemented B2C catalog mode for `GET /api/v1/public/products` on top of US-B2B-01 through US-B2B-06. This remains a stacked change until those earlier slices are merged.
+
+The public catalog endpoint requires `X-Service-Key`. A valid key matching `settings.b2c_to_b2b_key` uses catalog mode without JWT. An invalid or missing service key returns `401 {"code":"UNAUTHORIZED","message":"Authorization required"}`. The existing seller-list endpoint remains `GET /api/v1/products` and still requires the seller Bearer JWT. Seller JWTs are not accepted as a substitute for the B2C service key.
+
+Catalog mode returns only products with `status=MODERATED`, `deleted=false`, and at least one SKU with `active_quantity > 0`. Hidden, deleted, nonexistent, non-moderated, no-SKU, and out-of-stock products are silently omitted from both full catalog and batch responses. IDs remain UUID-backed. Batch lookup uses `POST /api/v1/public/products/batch` with `product_ids`; invalid ID tokens return `400 INVALID_REQUEST`.
+
+Catalog serialization uses dedicated allowlisted schemas. Product output includes only `id`, `title`, `description`, `status`, `category`, `images`, `characteristics`, and `skus`. SKU output includes only public SKU fields and UUID-backed `images[]`. It does not expose seller-only or moderation-only fields such as `cost_price`, `reserved_quantity`, `seller_id`, `deleted`, `blocking_reason`, or `field_reports`.
+
+Implementation follows final `flow/openapi.yaml` public catalog paths and keeps the reviewed US-B2B-07 behavior aligned with the UUID contract from US-B2B-01 through US-B2B-06.
+
+Assumption: catalog responses include only in-stock SKUs to reduce exposure of unavailable variants.
+
+# US-B2B-07 Validation
+
+Pytest proof commands:
+
+```powershell
+python -m pytest tests/api/test_products.py -vv -k "test_catalog_returns_moderated_in_stock_products or test_catalog_excludes_hard_blocked or test_catalog_missing_service_key_returns_401 or test_catalog_response_has_no_cost_price or test_batch_ids_returns_visible_subset"
+python -m pytest tests/api/test_products.py tests/api/test_skus.py tests/api/test_invoices.py -vv
+```
+
+Required scenario results:
+
+- `test_catalog_returns_moderated_in_stock_products`: passed
+- `test_catalog_excludes_hard_blocked`: passed
+- `test_catalog_missing_service_key_returns_401`: passed
+- `test_catalog_response_has_no_cost_price`: passed
+- `test_batch_ids_returns_visible_subset`: passed
+
+Suite results:
+
+- Required US-B2B-07 scenarios: 5 passed
+- `tests/api/test_products.py tests/api/test_skus.py tests/api/test_invoices.py`: 37 passed
+
+# ADR: B2C Catalog Mode Routing
+
+Options considered:
+
+- Public URL per final OpenAPI: selected. It keeps catalog routing at `/api/v1/public/products`, leaves seller-list behavior on `/api/v1/products`, and keeps field-leak risk controlled by dedicated catalog schemas and service logic.
+- One URL with branching by header: rejected for the rebased branch because final `flow/openapi.yaml` defines separate public catalog paths.
+- Two duplicate view functions on the same path: rejected because duplicate method/path registration in FastAPI is route-order dependent and increases maintenance risk.
