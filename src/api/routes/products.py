@@ -6,7 +6,14 @@ from sqlalchemy.orm import Session
 
 from src.api.deps import CurrentSeller, get_current_seller
 from src.db.session import get_db
-from src.schemas.product import ProductCreate, ProductCreateRead, ProductListRead, ProductRead, ProductResponse, ProductUpdate
+from src.schemas.product import (
+    ProductCreate,
+    ProductCreateRead,
+    ProductListRead,
+    ProductResponse,
+    ProductUpdate,
+    SellerProductRead,
+)
 from src.services.errors import NotFoundError
 from src.services.product_service import (
     ModerationUnavailableError,
@@ -16,7 +23,7 @@ from src.services.product_service import (
     ProductOwnerError,
     create_product,
     delete_product,
-    get_product_by_id,
+    get_seller_product_by_id,
     list_seller_products,
     update_product,
 )
@@ -82,9 +89,19 @@ def list_products_endpoint(
     )
 
 
-@router.get("/{id}", response_model=ProductRead, status_code=status.HTTP_200_OK)
-def get_product_endpoint(id: uuid.UUID, db: Session = Depends(get_db)) -> ProductRead:
-    return get_product_by_id(db, id)
+@router.get("/{id}", response_model=SellerProductRead, status_code=status.HTTP_200_OK)
+def get_product_endpoint(
+    id: uuid.UUID,
+    current_seller: CurrentSeller | JSONResponse = Depends(get_current_seller),
+    db: Session = Depends(get_db),
+) -> SellerProductRead | JSONResponse:
+    if isinstance(current_seller, JSONResponse):
+        return current_seller
+
+    try:
+        return get_seller_product_by_id(db, id, current_seller.seller_id)
+    except NotFoundError:
+        return _error(404, "NOT_FOUND", "Product not found")
 
 
 @router.put("/{id}", response_model=ProductResponse, status_code=status.HTTP_200_OK)

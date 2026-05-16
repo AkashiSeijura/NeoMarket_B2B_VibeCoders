@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Any
 import uuid
 
-from pydantic import AliasChoices, Field, computed_field, model_validator
+from pydantic import AliasChoices, Field, computed_field, field_validator, model_validator
 
 from src.schemas.common import (
     APIModel,
@@ -57,6 +57,10 @@ class ProductSKURead(APIModel):
     def add_synthetic_images(cls, value: Any) -> Any:
         image = value.get("image") if isinstance(value, dict) else getattr(value, "image", None)
         sku_id = value.get("id") if isinstance(value, dict) else getattr(value, "id")
+        active_quantity = value.get("active_quantity", 0) if isinstance(value, dict) else getattr(value, "active_quantity", 0)
+        reserved_quantity = (
+            value.get("reserved_quantity", 0) if isinstance(value, dict) else getattr(value, "reserved_quantity", 0)
+        )
         image_data = []
         if image:
             image_id = uuid.uuid5(SKU_IMAGE_NAMESPACE, f"sku-image:{sku_id}:0")
@@ -66,6 +70,7 @@ class ProductSKURead(APIModel):
             value = value.copy()
             if value.get("cost_price") is None:
                 value["cost_price"] = 0
+            value.setdefault("stock_quantity", active_quantity + reserved_quantity)
             if image:
                 value.setdefault("images", image_data)
             return value
@@ -77,9 +82,9 @@ class ProductSKURead(APIModel):
             "price": value.price,
             "discount": getattr(value, "discount", 0),
             "cost_price": getattr(value, "cost_price", None) or 0,
-            "stock_quantity": getattr(value, "stock_quantity", 0),
+            "stock_quantity": active_quantity + reserved_quantity,
             "active_quantity": value.active_quantity,
-            "reserved_quantity": getattr(value, "reserved_quantity", 0),
+            "reserved_quantity": reserved_quantity,
             "article": getattr(value, "article", None),
             "images": image_data,
             "characteristics": getattr(value, "characteristics", []),
@@ -122,6 +127,10 @@ class ProductSKUResponse(APIModel):
         ]
 
 
+class SellerProductSKURead(ProductSKURead):
+    pass
+
+
 class ProductRead(APIModel):
     id: uuid.UUID
     seller_id: uuid.UUID
@@ -136,7 +145,6 @@ class ProductRead(APIModel):
     skus: list[ProductSKURead] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
-    deleted: bool = False
     blocking_reason_id: str | None = None
     moderator_comment: str | None = None
 
@@ -153,6 +161,18 @@ class ProductCreateRead(ProductRead):
 
 class ProductResponse(ProductCreateRead):
     skus: list[ProductSKUResponse] = Field(default_factory=list)
+
+
+class SellerProductRead(ProductRead):
+    blocked: bool
+    skus: list[SellerProductSKURead] = Field(default_factory=list)
+    blocking_reason: dict[str, Any] | None = None
+    field_reports: list[dict[str, Any]] = Field(default_factory=list)
+
+    @field_validator("field_reports", mode="before")
+    @classmethod
+    def default_field_reports(cls, value):
+        return [] if value is None else value
 
 
 class ProductListRead(APIModel):

@@ -223,3 +223,47 @@ python -m pytest tests/api/test_products.py tests/api/test_skus.py -vv
 - Синхронная Moderation плюс outbox или fire-and-forget для B2C: уменьшает один failure mode, но создаёт смешанные гарантии доставки и всё равно требует инфраструктуру для одной стороны.
 
 Решение: сначала фиксировать мягкое удаление, затем синхронно пытаться отправить оба каскадных события в best-effort режиме и логировать ошибки. Если Moderation или B2C недоступны, B2B остаётся в состоянии `deleted=true`, а пропущенное внешнее событие считается документированной first-iteration inconsistency. Retry и reconciliation должны перейти на outbox в будущем срезе.
+Decision: commit the soft delete first, then synchronously attempt both outbound sends as best-effort operations and log failures. If Moderation or B2C is unavailable, B2B remains deleted and the missing external event is a documented first-iteration inconsistency. Retry and reconciliation should move to an outbox in a future slice.
+
+---
+
+# US-B2B-05 Summary
+
+Implemented seller-mode `GET /api/v1/products/{id}` on top of US-B2B-01, US-B2B-02, US-B2B-03, and US-B2B-04. This remains a stacked change until those earlier slices are merged.
+
+The endpoint authenticates the seller from Bearer JWT claims, uses only the JWT `seller_id` for ownership, and returns the same canonical `404 {"code":"NOT_FOUND","message":"Product not found"}` for nonexistent products and products owned by another seller. Seller detail also hides `deleted=true` products with the same 404, while internal service queries can still load deleted products where prior behavior needs it, such as already-deleted delete detection.
+
+Added nullable product JSON fields `blocking_reason` and `field_reports` with migration `0006_add_product_blocking_fields.py`. Seller detail returns a seller-specific response shape with `blocked`, full category/images/characteristics, seller-only SKU fields `cost_price` and `reserved_quantity`, and blocking fields. Non-blocking statuses return `blocking_reason=null` and `field_reports=[]`; blocked products return stored blocking data.
+
+The seller detail response preserves the accepted UUID-backed contract from US-B2B-01 and US-B2B-02: product, category, image, characteristic, and nested SKU ids are UUID values, nested SKU images are returned as `images[]`, and no integer-id response serialization is reintroduced.
+
+# US-B2B-05 Validation
+
+Pytest proof commands:
+
+```powershell
+python -m pytest tests/api/test_products.py -vv -k "test_get_moderated_product_returns_full_payload or test_get_blocked_product_returns_blocking_reason_and_field_reports or test_get_others_product_returns_404 or test_get_nonexistent_returns_404"
+python -m pytest tests/api/test_products.py tests/api/test_skus.py -vv
+```
+
+Required scenario results:
+
+- `test_get_moderated_product_returns_full_payload`: passed
+- `test_get_blocked_product_returns_blocking_reason_and_field_reports`: passed
+- `test_get_others_product_returns_404`: passed
+- `test_get_nonexistent_returns_404`: passed
+
+Suite results:
+
+- Required US-B2B-05 scenarios: 4 passed
+- `tests/api/test_products.py tests/api/test_skus.py`: 26 passed
+
+# ADR: Seller Product Detail Shape
+
+Options considered:
+
+- One view with auth/header branching: less code, but weaker readability and the highest risk of leaking `cost_price` or `reserved_quantity` into B2C mode.
+- Two separate views/schemas: clearer code and the lowest leakage risk; this is the best future direction for seller, B2C, and interservice modes.
+- Permission/auth-mode dependency: centralizes mode detection, but adds a new framework pattern and still requires careful schema separation.
+
+Decision: implement seller-mode only now with a seller-specific route dependency, service lookup, and response schema. Future B2C and interservice modes should use separate route handlers and schemas rather than branching this seller response.

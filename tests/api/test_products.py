@@ -15,6 +15,36 @@ class FakeEventResponse:
         return None
 
 
+def create_existing_sku(
+    db_session: Session,
+    product: Product,
+    *,
+    image: str = "/s3/iphone15-black-128.jpg",
+    active_quantity: int = 4,
+    reserved_quantity: int = 3,
+    discount: int = 10,
+    article: str | None = "IPHONE15-BLACK-128",
+    characteristic_name: str = "Color",
+    characteristic_value: str = "Black",
+) -> SKU:
+    sku = SKU(
+        product_id=product.id,
+        name="128GB Black",
+        price=9999000,
+        cost_price=7000000,
+        discount=discount,
+        article=article,
+        image=image,
+        active_quantity=active_quantity,
+        reserved_quantity=reserved_quantity,
+    )
+    sku.characteristics = [SKUCharacteristic(name=characteristic_name, value=characteristic_value)]
+    db_session.add(sku)
+    db_session.commit()
+    db_session.refresh(sku)
+    return sku
+
+
 def assert_uuid(value: str) -> None:
     UUID(value)
 
@@ -65,6 +95,8 @@ def product_factory(db_session: Session, category_factory):
         seller_id: str = SELLER_ID,
         status: ProductStatus = ProductStatus.CREATED,
         deleted: bool = False,
+        blocking_reason: dict | None = None,
+        field_reports: list[dict] | None = None,
     ) -> Product:
         category = category_factory()
         product = Product(
@@ -74,6 +106,8 @@ def product_factory(db_session: Session, category_factory):
             category_id=category.id,
             status=status,
             deleted=deleted,
+            blocking_reason=blocking_reason,
+            field_reports=field_reports,
         )
         product.images = [ProductImage(url="/s3/iphone15-front.jpg", ordering=0)]
         product.characteristics = [ProductCharacteristic(name="Brand", value="Apple")]
@@ -111,25 +145,6 @@ def _assert_product_response_contract(body: dict) -> None:
     assert body["moderator_comment"] is None
 
 
-def create_existing_sku(db_session: Session, product: Product, *, image: str = "/s3/iphone15-black-128.jpg") -> SKU:
-    sku = SKU(
-        product_id=product.id,
-        name="128GB Black",
-        price=9999000,
-        cost_price=7000000,
-        discount=10,
-        article="IPHONE15-BLACK-128",
-        image=image,
-        active_quantity=4,
-        reserved_quantity=3,
-    )
-    sku.characteristics = [SKUCharacteristic(name="Color", value="Black")]
-    db_session.add(sku)
-    db_session.commit()
-    db_session.refresh(sku)
-    return sku
-
-
 def test_create_product_returns_201_with_created_status(client, category_factory, product_payload_factory, auth_headers):
     category = category_factory()
     payload = product_payload_factory(category.id)
@@ -160,6 +175,116 @@ def test_create_product_returns_201_with_created_status(client, category_factory
     _assert_uuid(body["seller_id"])
     _assert_uuid(body["images"][0]["id"])
     _assert_uuid(body["characteristics"][0]["id"])
+
+
+def test_get_moderated_product_returns_full_payload(
+    client,
+    db_session: Session,
+    test_product_factory,
+    auth_headers,
+):
+    product = test_product_factory(status=ProductStatus.MODERATED)
+    sku = create_existing_sku(
+        db_session,
+        product,
+        active_quantity=10,
+        reserved_quantity=2,
+        discount=0,
+        article=None,
+        characteristic_name="Storage",
+        characteristic_value="128GB",
+    )
+
+    response = client.get(f"/api/v1/products/{product.id}", headers=auth_headers(SELLER_ID))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id"] == product.id
+    assert body["seller_id"] == SELLER_ID
+    assert body["category_id"] == product.category_id
+    assert body["title"] == product.title
+    assert body["description"] == product.description
+    assert body["status"] == "MODERATED"
+    assert body["deleted"] is False
+    assert body["blocked"] is False
+    assert body["category"] == {"id": product.category.id, "name": product.category.name}
+    assert body["images"][0]["id"]
+    assert body["images"][0]["url"] == "/s3/iphone15-front.jpg"
+    assert body["images"][0]["ordering"] == 0
+    assert body["characteristics"][0]["id"]
+    assert body["characteristics"][0]["name"] == "Brand"
+    assert body["characteristics"][0]["value"] == "Apple"
+    assert len(body["skus"]) == 1
+    response_sku = body["skus"][0]
+    assert response_sku["id"] == sku.id
+    assert response_sku["name"] == "128GB Black"
+    assert response_sku["price"] == 9999000
+    assert response_sku["cost_price"] == 7000000
+    assert response_sku["discount"] == 0
+    assert response_sku["image"] == "/s3/iphone15-black-128.jpg"
+    assert response_sku["active_quantity"] == 10
+    assert response_sku["reserved_quantity"] == 2
+    assert response_sku["characteristics"][0]["id"]
+    assert response_sku["characteristics"][0]["name"] == "Storage"
+    assert response_sku["characteristics"][0]["value"] == "128GB"
+    assert body["blocking_reason"] is None
+    assert body["field_reports"] == []
+    assert "created_at" in body
+    assert "updated_at" in body
+
+
+def test_get_blocked_product_returns_blocking_reason_and_field_reports(
+    client,
+    db_session: Session,
+    test_product_factory,
+    auth_headers,
+):
+    blocking_reason = {
+        "id": "a7b8c9d0-1234-5678-ef01-890123456789",
+        "title": "Description does not match product",
+        "comment": "Photos and description are inconsistent",
+    }
+    field_reports = [
+        {
+            "field_name": "description",
+            "sku_id": None,
+            "comment": "Description mentions another material",
+        }
+    ]
+    product = test_product_factory(
+        status=ProductStatus.BLOCKED,
+        blocking_reason=blocking_reason,
+        field_reports=field_reports,
+    )
+    create_existing_sku(db_session, product)
+
+    response = client.get(f"/api/v1/products/{product.id}", headers=auth_headers(SELLER_ID))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "BLOCKED"
+    assert body["blocked"] is True
+    assert body["blocking_reason"]["title"] == "Description does not match product"
+    assert body["blocking_reason"] == blocking_reason
+    assert body["field_reports"] == field_reports
+    assert isinstance(body["field_reports"], list)
+
+
+def test_get_others_product_returns_404(client, test_product_factory, auth_headers):
+    product = test_product_factory(seller_id=SELLER_ID)
+    other_seller_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+
+    response = client.get(f"/api/v1/products/{product.id}", headers=auth_headers(other_seller_id))
+
+    assert response.status_code == 404
+    assert response.json() == {"code": "NOT_FOUND", "message": "Product not found"}
+
+
+def test_get_nonexistent_returns_404(client, auth_headers):
+    response = client.get("/api/v1/products/999999", headers=auth_headers(SELLER_ID))
+
+    assert response.status_code == 404
+    assert response.json() == {"code": "NOT_FOUND", "message": "Product not found"}
 
 
 def test_seller_id_taken_from_jwt(
