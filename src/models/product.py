@@ -8,6 +8,7 @@ from src.models.base import Base
 
 
 class ProductStatus(str, Enum):
+    CREATED = "CREATED"
     DRAFT = "DRAFT"
     ON_MODERATION = "ON_MODERATION"
     MODERATED = "MODERATED"
@@ -23,8 +24,9 @@ class Product(Base):
     status: Mapped[ProductStatus] = mapped_column(
         SqlEnum(ProductStatus, name="product_status"),
         nullable=False,
-        default=ProductStatus.DRAFT,
+        default=ProductStatus.CREATED,
     )
+    seller_id: Mapped[str] = mapped_column(String(36), nullable=False)
     category_id: Mapped[int] = mapped_column(ForeignKey("categories.id", ondelete="RESTRICT"))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from pydantic import AliasChoices, Field
 
 from src.schemas.common import (
@@ -11,8 +13,8 @@ from src.schemas.common import (
 
 
 class ProductCreate(APIModel):
-    title: str
-    description: str
+    title: str = Field(min_length=1, max_length=255)
+    description: str = Field(min_length=1, max_length=5000)
     category_id: int = Field(validation_alias=AliasChoices("category_id", "categoryId"))
     images: list[ImagePayload] = Field(default_factory=list)
     characteristics: list[CharacteristicPayload] = Field(default_factory=list)
@@ -39,6 +41,8 @@ class ProductSKURead(APIModel):
 
 class ProductRead(APIModel):
     id: int
+    seller_id: str
+    category_id: int
     title: str
     description: str
     status: str
@@ -46,4 +50,6 @@ class ProductRead(APIModel):
     images: list[ImageOut] = Field(default_factory=list)
     characteristics: list[CharacteristicOut] = Field(default_factory=list)
     skus: list[ProductSKURead] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
 
