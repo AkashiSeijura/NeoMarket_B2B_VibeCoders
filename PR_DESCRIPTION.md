@@ -161,3 +161,50 @@ Options considered:
 - Add PATCH as canonical and keep PUT as compatibility: aligns new clients with the authoritative flow while avoiding an unnecessary breaking change.
 
 Decision: add canonical `PATCH /api/v1/products/{product_id}` and `PATCH /api/v1/skus/{sku_id}` routes that reuse the existing edit services, while keeping the PUT routes as compatibility aliases. SKU `article` is included in update because it is an existing stored SKU field and part of the create/read contract. SKU `images[]` update remains out of scope because image-management endpoints are modeled separately.
+
+---
+
+# US-B2B-04 Summary
+
+Implemented soft delete for `DELETE /api/v1/products/{id}` on top of US-B2B-01, US-B2B-02, and US-B2B-03. This remains a stacked change until those earlier slices are merged.
+
+The endpoint authenticates the seller from JWT claims, rejects other sellers with `403 NOT_OWNER`, rejects already-deleted products with `400 INVALID_REQUEST`, and marks the product with `deleted=true` without physically deleting products, SKUs, images, characteristics, invoices, or historical data. Successful deletes return `{"ok": true}`.
+
+Added the product `deleted` column and migration `0005_add_product_deleted.py`. Added a minimal seller product list at `GET /api/v1/products` that uses only the JWT seller identity and filters out `deleted=true` products; query parameters such as `seller_id` are not trusted for ownership.
+
+After committing the soft delete, the service sends best-effort product deletion events to Moderation and B2C. Moderation receives `POST {moderation_url}/api/v1/events/product` with `X-Service-Key: {b2b_to_mod_key}` and payload fields `idempotency_key`, `product_id`, `seller_id`, `event=DELETED`, and `date`. B2C receives `POST {b2c_url}/api/v1/events/product` with `X-Service-Key: {b2b_to_b2c_key}` and payload fields `idempotency_key`, `event=PRODUCT_DELETED`, `product_id`, `sku_ids`, and `date`.
+
+The canonical flow requires UUID idempotency keys but does not define generation semantics; this implementation uses fresh UUIDv4 values for delete events. The flow examples use UUID SKU ids, while this repository persists integer SKU ids, so B2C `sku_ids` are stringified persisted integer ids.
+
+# US-B2B-04 Validation
+
+Pytest proof commands:
+
+```powershell
+python -m pytest tests/api/test_products.py -vv -k "test_delete_sets_deleted_true or test_delete_emits_event_to_moderation or test_delete_emits_product_deleted_to_b2c or test_delete_already_deleted_returns_400 or test_delete_others_product_returns_403 or test_deleted_product_not_in_seller_list"
+python -m pytest tests/api/test_products.py tests/api/test_skus.py -vv
+```
+
+Required scenario results:
+
+- `test_delete_sets_deleted_true`: passed
+- `test_delete_emits_event_to_moderation`: passed
+- `test_delete_emits_product_deleted_to_b2c`: passed
+- `test_delete_already_deleted_returns_400`: passed
+- `test_delete_others_product_returns_403`: passed
+- `test_deleted_product_not_in_seller_list`: passed
+
+Suite results:
+
+- Required US-B2B-04 scenarios: 6 passed
+- `tests/api/test_products.py tests/api/test_skus.py`: 22 passed
+
+# ADR: Product Delete Event Delivery
+
+Options considered:
+
+- Two synchronous POSTs before commit: can roll back the DB if a service is unavailable, but creates external partial inconsistency if the first service receives an event and the second fails before rollback.
+- Outbox for both: best consistency and retry story, but requires a new table, dispatcher, monitoring, and retry semantics outside this assignment.
+- Sync Moderation plus outbox or fire-and-forget B2C: reduces one failure mode, but creates mixed delivery guarantees and still needs infrastructure for one side.
+
+Decision: commit the soft delete first, then synchronously attempt both outbound sends as best-effort operations and log failures. If Moderation or B2C is unavailable, B2B remains deleted and the missing external event is a documented first-iteration inconsistency. Retry and reconciliation should move to an outbox in a future slice.
