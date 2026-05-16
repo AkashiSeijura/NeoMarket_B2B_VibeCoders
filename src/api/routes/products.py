@@ -219,6 +219,8 @@ def delete_product_endpoint(
         return _error(404, "NOT_FOUND", "Product not found")
     except ProductOwnerError as exc:
         return _error(403, "NOT_OWNER", str(exc))
+    except ProductForbiddenError as exc:
+        return _error(403, "FORBIDDEN", str(exc))
     except ProductAlreadyDeletedError as exc:
         return _invalid_request(str(exc))
 
