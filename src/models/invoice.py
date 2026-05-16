@@ -10,6 +10,7 @@ from src.models.base import Base
 
 
 class InvoiceStatus(str, Enum):
+    PENDING = "PENDING"
     CREATED = "CREATED"
     ACCEPTED = "ACCEPTED"
 
@@ -19,10 +20,11 @@ class Invoice(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     reference: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    seller_id: Mapped[str] = mapped_column(String(36), nullable=False)
     status: Mapped[InvoiceStatus] = mapped_column(
         SqlEnum(InvoiceStatus, name="invoice_status"),
         nullable=False,
-        default=InvoiceStatus.CREATED,
+        default=InvoiceStatus.PENDING,
     )
     accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -47,6 +49,11 @@ class InvoiceItem(Base):
     invoice_id: Mapped[int] = mapped_column(ForeignKey("invoices.id", ondelete="CASCADE"))
     sku_id: Mapped[uuid.UUID] = mapped_column(GUID(), ForeignKey("skus.id", ondelete="RESTRICT"))
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    accepted_quantity: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     invoice = relationship("Invoice", back_populates="items")
     sku = relationship("SKU", back_populates="invoice_items")
+
+    @property
+    def sku_name(self) -> str:
+        return self.sku.name

@@ -3,13 +3,17 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from src.models import Invoice, InvoiceItem, InvoiceStatus, SKU
+from src.models import Invoice, InvoiceItem, InvoiceStatus, ProductStatus, SKU
 from src.schemas.invoice import InvoiceCreate
 from src.services.errors import ConflictError, NotFoundError, ValidationError
 
 
+class InvoiceOwnerError(Exception):
+    pass
+
+
 def _invoice_query():
-    return select(Invoice).options(selectinload(Invoice.items))
+    return select(Invoice).options(selectinload(Invoice.items).selectinload(InvoiceItem.sku))
 
 
 def _get_invoice_or_raise(db: Session, invoice_id: int) -> Invoice:
@@ -19,22 +23,33 @@ def _get_invoice_or_raise(db: Session, invoice_id: int) -> Invoice:
     return invoice
 
 
-def create_invoice(db: Session, payload: InvoiceCreate) -> Invoice:
+def create_invoice(db: Session, payload: InvoiceCreate, seller_id: str) -> Invoice:
     if not payload.items:
-        raise ValidationError("Invoice must contain at least one item")
+        raise ValidationError("At least one item is required")
+    for item in payload.items:
+        if item.quantity <= 0:
+            raise ValidationError("quantity must be > 0")
 
     requested_sku_ids = [item.sku_id for item in payload.items]
     unique_sku_ids = set(requested_sku_ids)
-    if len(unique_sku_ids) != len(requested_sku_ids):
-        raise ValidationError("Invoice items must contain unique skuId values")
-
-    skus = db.scalars(select(SKU).where(SKU.id.in_(unique_sku_ids))).all()
+    skus = db.scalars(
+        select(SKU)
+        .options(selectinload(SKU.product))
+        .where(SKU.id.in_(unique_sku_ids))
+    ).all()
     if len(skus) != len(unique_sku_ids):
-        found_ids = {sku.id for sku in skus}
-        missing_ids = sorted(unique_sku_ids - found_ids)
-        raise NotFoundError(f"SKU not found: {missing_ids}")
+        raise NotFoundError("SKU not found")
 
-    invoice = Invoice(reference=payload.reference)
+    sku_map = {sku.id: sku for sku in skus}
+    for item in payload.items:
+        sku = sku_map[item.sku_id]
+        product = sku.product
+        if product.seller_id != seller_id:
+            raise InvoiceOwnerError("One or more SKUs do not belong to the authenticated seller")
+        if product.deleted or product.status != ProductStatus.MODERATED:
+            raise ValidationError("Invoice can only be created for MODERATED products")
+
+    invoice = Invoice(reference=payload.reference, seller_id=seller_id, status=InvoiceStatus.PENDING)
     invoice.items = [InvoiceItem(sku_id=item.sku_id, quantity=item.quantity) for item in payload.items]
 
     db.add(invoice)

@@ -276,3 +276,48 @@ Options considered:
 - Use a single route with an auth-mode dependency and separate response schemas: keeps the path aligned with the authoritative detail contract while limiting the change to product detail and reducing leakage risk through schema separation.
 
 Decision: use a single `GET /api/v1/products/{id}` route with explicit auth-mode detection. `X-Service-Key` takes precedence when present, invalid service keys fail closed, and seller JWT handling is preserved for the no-service-key path. Seller and public modes use separate service lookups and separate response schemas so seller-only fields are not serialized in public mode.
+
+---
+
+# US-B2B-06 Summary
+
+Implemented seller-facing `POST /api/v1/invoices` for inbound product supply invoices.
+
+This PR is stacked on top of US-B2B-01, US-B2B-02, US-B2B-03, US-B2B-04, and US-B2B-05 until they are merged into dev.
+
+The endpoint authenticates the seller from Bearer JWT claims, ignores any body `seller_id`/`sellerId`, validates every requested SKU through its parent product ownership, and only allows SKUs whose parent product is exactly `MODERATED` and not deleted. Invoice creation stores a document with `status=PENDING`, requested item quantities, and `accepted_quantity=null`; it does not change `active_quantity`, `reserved_quantity`, or accepted stock.
+
+Added migration `0007_add_pending_invoice_creation_fields.py` to reuse the existing invoice tables while adding `PENDING`, `invoices.seller_id`, and nullable `invoice_items.accepted_quantity`.
+
+Local flow/b2b.yaml uses /api/invoices and older invoice status values, while the canonical flow and assignment require POST /api/v1/invoices and invoice status PENDING. This implementation follows the canonical flow and assignment endpoint.
+
+# US-B2B-06 Validation
+
+Pytest proof commands:
+
+```powershell
+python -m pytest tests/api/test_invoices.py -vv -k "create_invoice_with_moderated_sku_returns_201 or empty_items_returns_400 or non_moderated_sku_returns_400 or others_sku_returns_403"
+python -m pytest tests/api/test_products.py tests/api/test_skus.py tests/api/test_invoices.py -vv
+```
+
+Required scenario results:
+
+- `test_create_invoice_with_moderated_sku_returns_201`: passed
+- `test_empty_items_returns_400`: passed
+- `test_non_moderated_sku_returns_400`: passed
+- `test_others_sku_returns_403`: passed
+
+Suite results:
+
+- Required US-B2B-06 scenarios: 4 passed
+- `tests/api/test_products.py tests/api/test_skus.py tests/api/test_invoices.py`: 32 passed
+
+# ADR: Invoice Creation Validation Layer
+
+Options considered:
+
+- Serializer/schema validation: most readable for structural payload checks such as missing `items`, but a poor fit for DB-backed SKU ownership and product status checks. Future non-HTTP callers could bypass the rule.
+- Route/view validation: readable in one endpoint, but future invoice API paths could accidentally skip ownership/status checks by calling lower-level creation logic directly.
+- Service/model layer validation: keeps ownership, deleted-product, and `MODERATED` status checks next to the invoice write. It has slightly more service code, but the lowest risk of bypass when future API paths are added.
+
+Decision: validate SKU ownership and product eligibility in the service/model layer, with route-local payload parsing only where needed to return canonical `code`/`message` errors instead of FastAPI `422`.
