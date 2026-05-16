@@ -88,3 +88,59 @@ Options considered:
 - Fire-and-forget: lowest request latency, but it can leave a product in `ON_MODERATION` without a delivered event, making the first-SKU side effect hard to reason about.
 
 Decision: use synchronous POST for the first iteration. The outbox pattern is the preferred future reliability upgrade once background dispatch infrastructure is in scope.
+
+---
+
+# US-B2B-03 Summary
+
+Implemented authenticated edit behavior for `PUT /api/v1/products/{id}` and `PUT /api/v1/skus/{id}` on top of US-B2B-01 and US-B2B-02. This stacked PR depends on both US-B2B-01 and US-B2B-02 until they are merged into `dev`.
+
+Product edits ignore body `seller_id`, use the Bearer JWT `seller_id` claim for ownership, reject edits to another seller's product, and reject `HARD_BLOCKED` products without persisting changes or sending Moderation events. Edits to `MODERATED` and `BLOCKED` products return the product to `ON_MODERATION` and send a Moderation `EDITED` event.
+
+SKU edits ignore body `reserved_quantity`, `product_id`, and `seller_id` before validation, preserve persisted `reserved_quantity` and `product_id`, check ownership through the parent product, and reject SKUs whose parent product is `HARD_BLOCKED`. Edits to SKUs under `MODERATED` and `BLOCKED` parent products return the parent product to `ON_MODERATION` and send a Moderation `EDITED` event.
+
+Added `ProductStatus.BLOCKED` and migration `0004_add_blocked_product_status.py` using `ALTER TYPE product_status ADD VALUE IF NOT EXISTS 'BLOCKED'` inside Alembic `autocommit_block()`. Existing migrations were left unchanged.
+
+# US-B2B-03 Validation
+
+Pytest proof commands:
+
+```powershell
+python -m pytest tests/api/test_skus.py -vv -k "test_edit_moderated_product_returns_to_on_moderation or test_edit_blocked_product_returns_to_on_moderation or test_reserves_preserved_after_sku_edit or test_edit_hard_blocked_returns_403 or test_edit_others_product_returns_403"
+python -m pytest tests/api/test_products.py tests/api/test_skus.py -vv
+```
+
+Required scenario results:
+
+- `test_edit_moderated_product_returns_to_on_moderation`: passed
+- `test_edit_blocked_product_returns_to_on_moderation`: passed
+- `test_reserves_preserved_after_sku_edit`: passed
+- `test_edit_hard_blocked_returns_403`: passed
+- `test_edit_others_product_returns_403`: passed
+
+Suite results:
+
+- Required US-B2B-03 scenarios: 5 passed
+- `tests/api/test_products.py tests/api/test_skus.py`: 16 passed
+
+Pytest emitted the existing Windows cache warning while writing `.pytest_cache`; the test results passed.
+
+# ADR: Edited Moderation Event Idempotency
+
+Options considered:
+
+- Fresh UUID per edit attempt: preserves every accepted edit as a distinct Moderation event and avoids collapsing repeated edits into a single idempotent operation.
+- Deterministic key per product: simple and stable, but repeated edits to the same product could collapse into one Moderation event, which does not match the edit flow's need to re-enter moderation after each accepted edit.
+- Outbox-generated event identity: operationally stronger, but requires outbox infrastructure beyond this task.
+
+Decision: use a fresh UUID string for each `EDITED` event idempotency key. This is a local assumption because the canonical flow does not define deterministic idempotency semantics for repeated edits.
+
+# ADR: IDOR Ownership Enforcement
+
+Options considered:
+
+- Route/view ownership check: simple to read at the API boundary, but every new endpoint must remember to repeat the check before calling into write logic. Maintenance complexity stays low for one route, then grows as product and SKU endpoints multiply, and the risk of forgetting the check in a new endpoint is high.
+- DRF-style permission class: centralizes the concept and can reduce repetition in frameworks built around object permissions, but this service is FastAPI and does not currently have a permission-class layer. Adding one would increase maintenance complexity and introduce a new framework pattern for a small ownership rule.
+- Service/query-level ownership check: keeps ownership validation close to the data being modified and matches the existing product/SKU service structure. Maintenance complexity stays low because write paths already go through service functions, and the risk of forgetting the check in a new endpoint is lower when ownership is enforced in the mutation service rather than only in route code.
+
+Decision: enforce product and SKU ownership at the service/query level. This is the smallest fit for this FastAPI service, and product/SKU ownership is already checked close to the data being modified.

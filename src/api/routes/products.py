@@ -8,7 +8,10 @@ from src.api.deps import CurrentSeller, get_current_seller
 from src.db.session import get_db
 from src.schemas.product import ProductCreate, ProductCreateRead, ProductRead, ProductUpdate
 from src.services.product_service import (
+    ModerationUnavailableError,
     ProductCreateValidationError,
+    ProductForbiddenError,
+    ProductOwnerError,
     create_product,
     get_product_by_id,
     update_product,
@@ -29,6 +32,10 @@ def _invalid_request(message: str) -> JSONResponse:
         status_code=400,
         content={"code": "INVALID_REQUEST", "message": message},
     )
+
+
+def _error(status_code: int, code: str, message: str) -> JSONResponse:
+    return JSONResponse(status_code=status_code, content={"code": code, "message": message})
 
 
 @router.post("", response_model=ProductCreateRead, status_code=status.HTTP_201_CREATED)
@@ -57,6 +64,17 @@ def get_product_endpoint(id: uuid.UUID, db: Session = Depends(get_db)) -> Produc
 def update_product_endpoint(
     id: uuid.UUID,
     payload: ProductUpdate,
+    current_seller: CurrentSeller | JSONResponse = Depends(get_current_seller),
     db: Session = Depends(get_db),
-) -> ProductRead:
-    return update_product(db, id, payload)
+) -> ProductRead | JSONResponse:
+    if isinstance(current_seller, JSONResponse):
+        return current_seller
+
+    try:
+        return update_product(db, id, payload, current_seller.seller_id)
+    except ProductOwnerError as exc:
+        return _error(403, "NOT_OWNER", str(exc))
+    except ProductForbiddenError as exc:
+        return _error(403, "FORBIDDEN", str(exc))
+    except ModerationUnavailableError:
+        return _error(502, "MODERATION_UNAVAILABLE", "Moderation service unavailable")

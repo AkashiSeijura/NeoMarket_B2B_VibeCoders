@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session, selectinload
 
 from src.models import Product, ProductStatus, SKU, SKUCharacteristic
 from src.schemas.sku import SKUCreate, SKUUpdate
-from src.services.moderation_service import send_product_created_event
+from src.services.moderation_service import send_product_created_event, send_product_edited_event
 from src.services.errors import NotFoundError
 
 
@@ -22,7 +22,7 @@ class ModerationUnavailableError(Exception):
 
 
 def _sku_query():
-    return select(SKU).options(selectinload(SKU.characteristics))
+    return select(SKU).options(selectinload(SKU.characteristics), selectinload(SKU.product))
 
 
 def _get_product_or_raise(db: Session, product_id: uuid.UUID) -> Product:
@@ -90,9 +90,7 @@ def create_sku(db: Session, payload: SKUCreate, seller_id: uuid.UUID) -> SKU:
     return _get_sku_or_raise(db, sku.id)
 
 
-def update_sku(db: Session, payload: SKUUpdate) -> SKU:
-    sku = _get_sku_or_raise(db, payload.id)
-
+def _apply_sku_updates(sku: SKU, payload: SKUUpdate) -> None:
     if payload.name is not None:
         sku.name = payload.name
     if payload.price is not None:
@@ -107,6 +105,33 @@ def update_sku(db: Session, payload: SKUUpdate) -> SKU:
         sku.active_quantity = payload.active_quantity
     if payload.characteristics is not None:
         sku.characteristics = [SKUCharacteristic(name=item.name, value=item.value) for item in payload.characteristics]
+
+
+def update_sku(db: Session, sku_id: int, payload: SKUUpdate, seller_id: str) -> SKU:
+    sku = _get_sku_or_raise(db, sku_id)
+    product = sku.product
+
+    if product.seller_id != seller_id:
+        raise SKUOwnerError("Product does not belong to the authenticated seller")
+    if product.status == ProductStatus.HARD_BLOCKED:
+        raise SKUForbiddenError("Cannot edit SKU for hard-blocked product")
+
+    should_send_moderation_event = product.status in {
+        ProductStatus.MODERATED,
+        ProductStatus.BLOCKED,
+    }
+
+    _apply_sku_updates(sku, payload)
+    if should_send_moderation_event:
+        product.status = ProductStatus.ON_MODERATION
+
+    db.flush()
+    if should_send_moderation_event:
+        try:
+            send_product_edited_event(product_id=product.id, seller_id=seller_id)
+        except Exception as exc:
+            db.rollback()
+            raise ModerationUnavailableError("Moderation service unavailable") from exc
 
     db.commit()
     return _get_sku_or_raise(db, sku.id)

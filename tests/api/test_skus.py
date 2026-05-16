@@ -88,7 +88,7 @@ def sku_count(db_session: Session, product_id: int) -> int:
     return db_session.scalar(select(func.count(SKU.id)).where(SKU.product_id == product_id))
 
 
-def create_existing_sku(db_session: Session, product: Product) -> SKU:
+def create_existing_sku(db_session: Session, product: Product, *, reserved_quantity: int = 0) -> SKU:
     sku = SKU(
         product_id=product.id,
         name="128GB Black",
@@ -97,7 +97,7 @@ def create_existing_sku(db_session: Session, product: Product) -> SKU:
         discount=0,
         image="/s3/iphone15-black-128.jpg",
         active_quantity=0,
-        reserved_quantity=0,
+        reserved_quantity=reserved_quantity,
     )
     db_session.add(sku)
     db_session.commit()
@@ -327,3 +327,165 @@ def test_first_sku_moderation_failure_rolls_back(
     persisted_product = db_session.get(Product, product.id)
     assert persisted_product.status == ProductStatus.CREATED
     assert sku_count(db_session, product.id) == 0
+
+
+def test_edit_moderated_product_returns_to_on_moderation(
+    client,
+    db_session: Session,
+    product_factory,
+    auth_headers,
+    moderation_requests,
+):
+    product = product_factory(status=ProductStatus.MODERATED)
+
+    response = client.put(
+        f"/api/v1/products/{product.id}",
+        json={"title": "iPhone 15 Pro Max Updated", "seller_id": "body-seller"},
+        headers=auth_headers(SELLER_ID),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["title"] == "iPhone 15 Pro Max Updated"
+    assert body["seller_id"] == SELLER_ID
+    assert body["status"] == "ON_MODERATION"
+
+    db_session.refresh(product)
+    assert product.status == ProductStatus.ON_MODERATION
+    assert len(moderation_requests) == 1
+    event = moderation_requests[0]["json"]
+    assert event["product_id"] == product.id
+    assert event["seller_id"] == SELLER_ID
+    assert event["event"] == "EDITED"
+    assert event["idempotency_key"]
+
+
+def test_edit_blocked_product_returns_to_on_moderation(
+    client,
+    db_session: Session,
+    product_factory,
+    auth_headers,
+    moderation_requests,
+):
+    product = product_factory(status=ProductStatus.BLOCKED)
+
+    response = client.put(
+        f"/api/v1/products/{product.id}",
+        json={"description": "Updated description"},
+        headers=auth_headers(SELLER_ID),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["description"] == "Updated description"
+    assert body["status"] == "ON_MODERATION"
+
+    db_session.refresh(product)
+    assert product.status == ProductStatus.ON_MODERATION
+    assert len(moderation_requests) == 1
+    assert moderation_requests[0]["json"]["event"] == "EDITED"
+
+
+def test_reserves_preserved_after_sku_edit(
+    client,
+    db_session: Session,
+    product_factory,
+    auth_headers,
+    moderation_requests,
+):
+    product = product_factory(status=ProductStatus.MODERATED)
+    sku = create_existing_sku(db_session, product, reserved_quantity=7)
+
+    response = client.put(
+        f"/api/v1/skus/{sku.id}",
+        json={
+            "name": "128GB Natural Titanium",
+            "reserved_quantity": 999,
+            "product_id": 999999,
+            "seller_id": "body-seller",
+        },
+        headers=auth_headers(SELLER_ID),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["name"] == "128GB Natural Titanium"
+    assert body["product_id"] == product.id
+    assert body["reserved_quantity"] == 7
+
+    db_session.expire_all()
+    persisted_sku = db_session.get(SKU, sku.id)
+    persisted_product = db_session.get(Product, product.id)
+    assert persisted_sku.product_id == product.id
+    assert persisted_sku.reserved_quantity == 7
+    assert persisted_product.status == ProductStatus.ON_MODERATION
+    assert len(moderation_requests) == 1
+    assert moderation_requests[0]["json"]["event"] == "EDITED"
+
+
+def test_edit_hard_blocked_returns_403(
+    client,
+    db_session: Session,
+    product_factory,
+    auth_headers,
+    moderation_requests,
+):
+    product = product_factory(status=ProductStatus.HARD_BLOCKED)
+    sku = create_existing_sku(db_session, product, reserved_quantity=5)
+
+    product_response = client.put(
+        f"/api/v1/products/{product.id}",
+        json={"title": "Forbidden title"},
+        headers=auth_headers(SELLER_ID),
+    )
+    sku_response = client.put(
+        f"/api/v1/skus/{sku.id}",
+        json={"name": "Forbidden SKU", "reserved_quantity": 999},
+        headers=auth_headers(SELLER_ID),
+    )
+
+    assert product_response.status_code == 403
+    assert sku_response.status_code == 403
+
+    db_session.expire_all()
+    persisted_product = db_session.get(Product, product.id)
+    persisted_sku = db_session.get(SKU, sku.id)
+    assert persisted_product.title == "iPhone 15 Pro Max"
+    assert persisted_product.status == ProductStatus.HARD_BLOCKED
+    assert persisted_sku.name == "128GB Black"
+    assert persisted_sku.reserved_quantity == 5
+    assert moderation_requests == []
+
+
+def test_edit_others_product_returns_403(
+    client,
+    db_session: Session,
+    product_factory,
+    auth_headers,
+    moderation_requests,
+):
+    other_seller_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    product = product_factory(seller_id=SELLER_ID, status=ProductStatus.MODERATED)
+    sku = create_existing_sku(db_session, product)
+
+    product_response = client.put(
+        f"/api/v1/products/{product.id}",
+        json={"title": "Other seller title", "seller_id": SELLER_ID},
+        headers=auth_headers(other_seller_id),
+    )
+    sku_response = client.put(
+        f"/api/v1/skus/{sku.id}",
+        json={"name": "Other seller SKU", "seller_id": SELLER_ID},
+        headers=auth_headers(other_seller_id),
+    )
+
+    assert product_response.status_code == 403
+    assert sku_response.status_code == 403
+
+    db_session.expire_all()
+    persisted_product = db_session.get(Product, product.id)
+    persisted_sku = db_session.get(SKU, sku.id)
+    assert persisted_product.title == "iPhone 15 Pro Max"
+    assert persisted_product.status == ProductStatus.MODERATED
+    assert persisted_sku.name == "128GB Black"
+    assert moderation_requests == []

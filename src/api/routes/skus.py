@@ -63,6 +63,32 @@ async def _parse_sku_create_payload(request: Request) -> SKUCreate | JSONRespons
         return _invalid_request(_sku_validation_message(exc))
 
 
+async def _parse_sku_update_payload(request: Request, sku_id: int | None = None) -> SKUUpdate | JSONResponse:
+    try:
+        body = await request.json()
+    except ValueError:
+        return _invalid_request("Invalid JSON body")
+
+    if not isinstance(body, dict):
+        return _invalid_request("Invalid SKU payload")
+
+    payload_data = dict(body)
+    payload_data.pop("seller_id", None)
+    payload_data.pop("sellerId", None)
+    payload_data.pop("product_id", None)
+    payload_data.pop("productId", None)
+    payload_data.pop("reserved_quantity", None)
+    payload_data.pop("reservedQuantity", None)
+
+    if sku_id is not None:
+        payload_data["id"] = sku_id
+
+    try:
+        return SKUUpdate.model_validate(payload_data)
+    except PydanticValidationError as exc:
+        return _invalid_request(_sku_validation_message(exc))
+
+
 @router.post("", response_model=SKURead, status_code=status.HTTP_201_CREATED)
 async def create_sku_endpoint(
     request: Request,
@@ -88,7 +114,49 @@ async def create_sku_endpoint(
         return _error(502, "MODERATION_UNAVAILABLE", "Moderation service unavailable")
 
 
+@router.put("/{id}", response_model=SKURead, status_code=status.HTTP_200_OK)
+async def update_sku_by_id_endpoint(
+    id: int,
+    request: Request,
+    current_seller: CurrentSeller | JSONResponse = Depends(get_current_seller),
+    db: Session = Depends(get_db),
+) -> SKURead | JSONResponse:
+    if isinstance(current_seller, JSONResponse):
+        return current_seller
+
+    payload = await _parse_sku_update_payload(request, id)
+    if isinstance(payload, JSONResponse):
+        return payload
+
+    try:
+        return update_sku(db, id, payload, current_seller.seller_id)
+    except SKUOwnerError as exc:
+        return _error(403, "NOT_OWNER", str(exc))
+    except SKUForbiddenError as exc:
+        return _error(403, "FORBIDDEN", str(exc))
+    except ModerationUnavailableError:
+        return _error(502, "MODERATION_UNAVAILABLE", "Moderation service unavailable")
+
+
 @router.put("", response_model=SKURead, status_code=status.HTTP_200_OK)
-def update_sku_endpoint(payload: SKUUpdate, db: Session = Depends(get_db)) -> SKURead:
-    return update_sku(db, payload)
+async def update_sku_endpoint(
+    request: Request,
+    current_seller: CurrentSeller | JSONResponse = Depends(get_current_seller),
+    db: Session = Depends(get_db),
+) -> SKURead | JSONResponse:
+    if isinstance(current_seller, JSONResponse):
+        return current_seller
+
+    payload = await _parse_sku_update_payload(request)
+    if isinstance(payload, JSONResponse):
+        return payload
+
+    try:
+        return update_sku(db, payload.id, payload, current_seller.seller_id)
+    except SKUOwnerError as exc:
+        return _error(403, "NOT_OWNER", str(exc))
+    except SKUForbiddenError as exc:
+        return _error(403, "FORBIDDEN", str(exc))
+    except ModerationUnavailableError:
+        return _error(502, "MODERATION_UNAVAILABLE", "Moderation service unavailable")
 
