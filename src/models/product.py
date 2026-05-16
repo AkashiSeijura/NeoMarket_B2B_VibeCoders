@@ -15,6 +15,7 @@ class ProductStatus(str, Enum):
     ON_MODERATION = "ON_MODERATION"
     MODERATED = "MODERATED"
     REJECTED = "REJECTED"
+    HARD_BLOCKED = "HARD_BLOCKED"
 
 
 class Product(Base):
