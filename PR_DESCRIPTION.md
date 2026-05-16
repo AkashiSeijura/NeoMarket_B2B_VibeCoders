@@ -401,3 +401,55 @@ Options considered:
 - Implement only pagination and document the unsupported surface: selected for this branch. It keeps behavior narrow and testable while making the contract gap explicit.
 
 Decision: only `limit` and `offset` are active for `GET /api/v1/public/products` in this slice. `category_id`, `search`, `min_price`, `max_price`, `seller_id`, dynamic `filters`, and advanced `sort` remain deferred.
+
+---
+
+# US-B2B-08 Summary
+
+Implemented service-to-service reserve/unreserve endpoints on top of the stacked US-B2B-01 through US-B2B-07 branch.
+
+Added `POST /api/v1/reserve` and `POST /api/v1/unreserve`, both authenticated only by `X-Service-Key == settings.b2c_to_b2b_key`. Seller JWTs are not accepted as a substitute. Reserve validates `idempotency_key`, non-empty `items`, positive integer `sku_id`, and `quantity > 0`; unreserve validates `order_id`, non-empty `items`, positive integer `sku_id`, and `quantity > 0`.
+
+Reserve is all-or-nothing against catalog-visible stock only: parent product must be `MODERATED`, not deleted, and have enough `active_quantity`. Hidden, deleted, nonexistent, and non-moderated SKUs return the non-leaking reserve conflict shape with `available: 0` and `OUT_OF_STOCK`; visible SKUs with positive but insufficient stock return `INSUFFICIENT_STOCK`. Successful reserve decrements `active_quantity`, increments `reserved_quantity`, stores a cached success response in `reserve_operations`, and emits `SKU_OUT_OF_STOCK` after commit when a SKU reaches zero active stock.
+
+Unreserve restores stock in one transaction by moving quantities from `reserved_quantity` back to `active_quantity`. If any item would make `reserved_quantity` negative, it returns `409 {"code":"CONFLICT","message":"Insufficient reserved quantity"}` and rolls back all changes. No persistent unreserve replay was added because the existing schema has no order-operation storage table.
+
+Added migration `0008_add_reserve_operations.py` with `idempotency_key`, `request_hash`, normalized `request_payload`, cached success `response`, and `created_at`. Reserve request hashing normalizes by aggregating quantities per `sku_id` and sorting items, so reordered or duplicate-line equivalent requests replay from cache without double deduction. Same key with different normalized payload returns `409 CONFLICT`.
+
+`flow/b2b.yaml` does not define `/api/v1/reserve` or `/api/v1/unreserve`; this implementation follows `flow/b2b-flows.md#reserve-sku` and leaves `flow/*` unchanged.
+
+PostgreSQL production uses `SELECT FOR UPDATE` for SKU rows inside the reserve/unreserve transaction. SQLite tests verify deterministic all-or-nothing behavior but do not prove real row-lock semantics. B2C event delivery is best-effort after a successful reserve commit; delivery failure is logged and does not roll back stock changes.
+
+# US-B2B-08 Validation
+
+Pytest proof commands:
+
+```powershell
+python -m pytest tests/api/test_reservations.py -vv
+python -m pytest tests/api/test_reservations.py -vv -k "test_reserve_all_skus_succeeds or test_partial_insufficient_stock_returns_409_all_rollback or test_idempotent_reserve_returns_200_without_double_deduction or test_sku_out_of_stock_event_emitted or test_unreserve_restores_quantities"
+python -m pytest tests/api/test_products.py tests/api/test_skus.py tests/api/test_invoices.py tests/api/test_reservations.py -vv
+```
+
+Required scenario results:
+
+- `test_reserve_all_skus_succeeds`: passed
+- `test_partial_insufficient_stock_returns_409_all_rollback`: passed
+- `test_idempotent_reserve_returns_200_without_double_deduction`: passed
+- `test_sku_out_of_stock_event_emitted`: passed
+- `test_unreserve_restores_quantities`: passed
+
+Suite results:
+
+- `tests/api/test_reservations.py`: 11 passed
+- Required US-B2B-08 scenarios: 5 passed, 6 deselected
+- `tests/api/test_products.py tests/api/test_skus.py tests/api/test_invoices.py tests/api/test_reservations.py`: 48 passed
+
+# ADR: Reserve Transaction Strategy
+
+Options considered:
+
+- One transaction with `SELECT FOR UPDATE`: selected. It gives the best correctness/performance balance for concurrent reserve requests in this FastAPI/SQLAlchemy service and keeps implementation complexity low.
+- Optimistic locking: would require version columns, conflict retries, and broader model changes for little benefit in the current single-database stock mutation.
+- Two-phase commit: unnecessary and too complex because reserve/unreserve mutate one database; B2C event delivery is intentionally best-effort after commit.
+
+Decision: use one database transaction, claim the idempotency key by inserting/flushing `reserve_operations`, lock all requested SKU rows with `SELECT FOR UPDATE` where supported, validate all items, mutate stock, cache the success response, and commit. Validation/stock conflicts roll back the operation row and stock changes, so failed reserve attempts are not replay-cached and emit no events.

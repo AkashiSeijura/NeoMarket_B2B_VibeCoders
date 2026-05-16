@@ -35,3 +35,44 @@ def send_product_deleted_event(product_id: int, sku_ids: list[int]) -> None:
         response.raise_for_status()
     except httpx.HTTPError as exc:
         raise B2CSenderError("B2C service unavailable") from exc
+
+
+def build_sku_out_of_stock_event(
+    *,
+    idempotency_key: str,
+    product_id: int,
+    sku_id: int,
+) -> dict[str, str | int]:
+    return {
+        "idempotency_key": idempotency_key,
+        "event": "SKU_OUT_OF_STOCK",
+        "product_id": product_id,
+        "sku_id": sku_id,
+        "date": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+    }
+
+
+def send_sku_out_of_stock_event(
+    *,
+    idempotency_key: str,
+    product_id: int,
+    sku_id: int,
+) -> None:
+    url = f"{settings.b2c_url.rstrip('/')}/api/v1/events/product"
+    headers = {"X-Service-Key": settings.b2b_to_b2c_key}
+    payload = build_sku_out_of_stock_event(
+        idempotency_key=idempotency_key,
+        product_id=product_id,
+        sku_id=sku_id,
+    )
+
+    try:
+        response = httpx.post(
+            url,
+            json=payload,
+            headers=headers,
+            timeout=settings.b2c_timeout_seconds,
+        )
+        response.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise B2CSenderError("B2C service unavailable") from exc

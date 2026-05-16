@@ -6,6 +6,7 @@ from src.models import (
     Product,
     ProductCharacteristic,
     ProductImage,
+    ReserveOperation,
     SKU,
     SKUCharacteristic,
 )
@@ -20,5 +21,6 @@ __all__ = [
     "SKUCharacteristic",
     "Invoice",
     "InvoiceItem",
+    "ReserveOperation",
 ]
 
