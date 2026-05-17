@@ -49,6 +49,10 @@ def assert_uuid(value: str) -> None:
     UUID(value)
 
 
+def public_headers(key: str | None = None) -> dict[str, str]:
+    return {"X-Service-Key": key or settings.b2c_to_b2b_key}
+
+
 @pytest.fixture()
 def moderation_requests(monkeypatch):
     requests = []
@@ -282,6 +286,167 @@ def test_get_others_product_returns_404(client, test_product_factory, auth_heade
 
 def test_get_nonexistent_returns_404(client, auth_headers):
     response = client.get("/api/v1/products/999999", headers=auth_headers(SELLER_ID))
+
+    assert response.status_code == 404
+    assert response.json() == {"code": "NOT_FOUND", "message": "Product not found"}
+
+
+def test_public_product_detail_with_valid_service_key_returns_public_payload(
+    client,
+    db_session: Session,
+    test_product_factory,
+    test_event_requests,
+):
+    product = test_product_factory(status=ProductStatus.MODERATED)
+    active_sku = create_existing_sku(
+        db_session,
+        product,
+        active_quantity=8,
+        reserved_quantity=3,
+        discount=0,
+        article="IPHONE15-BLACK-128",
+        characteristic_name="Storage",
+        characteristic_value="128GB",
+    )
+    create_existing_sku(
+        db_session,
+        product,
+        active_quantity=0,
+        discount=0,
+        article=None,
+        image="",
+        characteristic_name="Storage",
+        characteristic_value="128GB",
+    )
+
+    response = client.get(f"/api/v1/products/{product.id}", headers=public_headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id"] == str(product.id)
+    assert body["seller_id"] == SELLER_ID
+    assert body["category_id"] == str(product.category_id)
+    assert body["title"] == product.title
+    assert body["slug"] == f"iphone-15-pro-max-{product.id}"
+    assert body["description"] == product.description
+    assert body["status"] == "MODERATED"
+    assert body["images"] == [
+        {
+            "id": str(product.images[0].id),
+            "url": "/s3/iphone15-front.jpg",
+            "ordering": 0,
+        }
+    ]
+    assert body["characteristics"] == [
+        {
+            "id": str(product.characteristics[0].id),
+            "name": "Brand",
+            "value": "Apple",
+        }
+    ]
+    assert len(body["skus"]) == 1
+    assert body["skus"][0] == {
+        "id": str(active_sku.id),
+        "product_id": str(product.id),
+        "name": "128GB Black",
+        "price": 9999000,
+        "discount": 0,
+        "active_quantity": 8,
+        "article": "IPHONE15-BLACK-128",
+        "characteristics": [
+            {
+                "id": str(active_sku.characteristics[0].id),
+                "name": "Storage",
+                "value": "128GB",
+            }
+        ],
+        "stock_quantity": 8,
+        "images": [{"url": "/s3/iphone15-black-128.jpg", "ordering": 0}],
+    }
+    assert test_event_requests == {"moderation": [], "b2c": []}
+
+
+def test_public_product_detail_hides_seller_only_fields(
+    client,
+    db_session: Session,
+    test_product_factory,
+):
+    product = test_product_factory(
+        status=ProductStatus.MODERATED,
+        blocking_reason={"title": "Seller-only reason"},
+        field_reports=[{"field_name": "title", "comment": "Seller-only report"}],
+    )
+    create_existing_sku(db_session, product, active_quantity=5, reserved_quantity=7)
+
+    response = client.get(f"/api/v1/products/{product.id}", headers=public_headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert "deleted" not in body
+    assert "blocking_reason" not in body
+    assert "field_reports" not in body
+    assert "moderator_comment" not in body
+    assert "blocking_reason_id" not in body
+
+    sku = body["skus"][0]
+    assert "cost_price" not in sku
+    assert "reserved_quantity" not in sku
+    assert sku["active_quantity"] == 5
+    assert sku["stock_quantity"] == 5
+
+
+def test_public_product_detail_invalid_service_key_returns_401(
+    client,
+    test_product_factory,
+    auth_headers,
+):
+    product = test_product_factory(status=ProductStatus.MODERATED)
+    headers = auth_headers(SELLER_ID)
+    headers["X-Service-Key"] = "wrong-key"
+
+    response = client.get(f"/api/v1/products/{product.id}", headers=headers)
+
+    assert response.status_code == 401
+    assert response.json() == {"code": "UNAUTHORIZED", "message": "Authorization required"}
+
+
+def test_public_product_detail_blocked_product_returns_404(
+    client,
+    db_session: Session,
+    test_product_factory,
+):
+    product = test_product_factory(status=ProductStatus.BLOCKED)
+    create_existing_sku(db_session, product, active_quantity=5)
+
+    response = client.get(f"/api/v1/products/{product.id}", headers=public_headers())
+
+    assert response.status_code == 404
+    assert response.json() == {"code": "NOT_FOUND", "message": "Product not found"}
+
+
+def test_public_product_detail_deleted_product_returns_404(
+    client,
+    db_session: Session,
+    test_product_factory,
+):
+    product = test_product_factory(status=ProductStatus.MODERATED, deleted=True)
+    create_existing_sku(db_session, product, active_quantity=5)
+
+    response = client.get(f"/api/v1/products/{product.id}", headers=public_headers())
+
+    assert response.status_code == 404
+    assert response.json() == {"code": "NOT_FOUND", "message": "Product not found"}
+
+
+def test_public_product_detail_without_active_sku_returns_404(
+    client,
+    db_session: Session,
+    test_product_factory,
+):
+    product = test_product_factory(status=ProductStatus.MODERATED)
+    create_existing_sku(db_session, product, active_quantity=0, reserved_quantity=4)
+
+    response = client.get(f"/api/v1/products/{product.id}", headers=public_headers())
 
     assert response.status_code == 404
     assert response.json() == {"code": "NOT_FOUND", "message": "Product not found"}

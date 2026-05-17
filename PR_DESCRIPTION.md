@@ -229,13 +229,13 @@ Decision: commit the soft delete first, then synchronously attempt both outbound
 
 # US-B2B-05 Summary
 
-Implemented seller-mode `GET /api/v1/products/{id}` on top of US-B2B-01, US-B2B-02, US-B2B-03, and US-B2B-04. This remains a stacked change until those earlier slices are merged.
+Migrated `GET /api/v1/products/{id}` to the dual-mode detail behavior from `flow/neomarket-b2b.yaml` on top of US-B2B-01 through US-B2B-04. This remains a stacked change until those earlier slices are merged.
 
-The endpoint authenticates the seller from Bearer JWT claims, uses only the JWT `seller_id` for ownership, and returns the same canonical `404 {"code":"NOT_FOUND","message":"Product not found"}` for nonexistent products and products owned by another seller. Seller detail also hides `deleted=true` products with the same 404, while internal service queries can still load deleted products where prior behavior needs it, such as already-deleted delete detection.
+When `X-Service-Key` is absent, the endpoint stays in seller mode: it authenticates the seller from Bearer JWT claims, uses only the JWT `seller_id` for ownership, and returns the same canonical `404 {"code":"NOT_FOUND","message":"Product not found"}` for nonexistent products, deleted products, and products owned by another seller. Seller detail keeps the existing seller-only fields, including `cost_price`, `reserved_quantity`, `blocking_reason`, and `field_reports`.
 
-Added nullable product JSON fields `blocking_reason` and `field_reports` with migration `0006_add_product_blocking_fields.py`. Seller detail returns a seller-specific response shape with `blocked`, full category/images/characteristics, seller-only SKU fields `cost_price` and `reserved_quantity`, and blocking fields. Non-blocking statuses return `blocking_reason=null` and `field_reports=[]`; blocked products return stored blocking data.
+When a valid `X-Service-Key` is present, the endpoint uses public B2C mode and does not require or trust Bearer JWT. Invalid or empty service keys return `401 {"code":"UNAUTHORIZED","message":"Authorization required"}`, even if an Authorization header is also present. Public mode only returns products that are `MODERATED`, not deleted, and have at least one SKU with `active_quantity > 0`; blocked, deleted, nonexistent, and out-of-stock products return the same 404.
 
-The seller detail response preserves the accepted UUID-backed contract from US-B2B-01 and US-B2B-02: product, category, image, characteristic, and nested SKU ids are UUID values, nested SKU images are returned as `images[]`, and no integer-id response serialization is reintroduced.
+Seller and public detail responses preserve the accepted UUID-backed contract from US-B2B-01 and US-B2B-02: product, category, image, characteristic, and nested SKU ids are UUID values, nested SKU images are returned as `images[]`, and no integer-id response serialization is reintroduced. Public detail uses separate response schemas to omit seller-only fields, includes only in-stock public SKUs, maps public `stock_quantity` to `active_quantity`, and keeps `active_quantity` because the schema requires it.
 
 # US-B2B-05 Validation
 
@@ -243,6 +243,7 @@ Pytest proof commands:
 
 ```powershell
 python -m pytest tests/api/test_products.py -vv -k "test_get_moderated_product_returns_full_payload or test_get_blocked_product_returns_blocking_reason_and_field_reports or test_get_others_product_returns_404 or test_get_nonexistent_returns_404"
+python -m pytest tests/api/test_products.py -vv -k "test_get_moderated_product_returns_full_payload or test_get_blocked_product_returns_blocking_reason_and_field_reports or test_get_others_product_returns_404 or test_get_nonexistent_returns_404 or test_public_product_detail_with_valid_service_key_returns_public_payload or test_public_product_detail_hides_seller_only_fields or test_public_product_detail_invalid_service_key_returns_401 or test_public_product_detail_blocked_product_returns_404 or test_public_product_detail_deleted_product_returns_404 or test_public_product_detail_without_active_sku_returns_404"
 python -m pytest tests/api/test_products.py tests/api/test_skus.py -vv
 ```
 
@@ -252,18 +253,24 @@ Required scenario results:
 - `test_get_blocked_product_returns_blocking_reason_and_field_reports`: passed
 - `test_get_others_product_returns_404`: passed
 - `test_get_nonexistent_returns_404`: passed
+- `test_public_product_detail_with_valid_service_key_returns_public_payload`: passed
+- `test_public_product_detail_hides_seller_only_fields`: passed
+- `test_public_product_detail_invalid_service_key_returns_401`: passed
+- `test_public_product_detail_blocked_product_returns_404`: passed
+- `test_public_product_detail_deleted_product_returns_404`: passed
+- `test_public_product_detail_without_active_sku_returns_404`: passed
 
 Suite results:
 
-- Required US-B2B-05 scenarios: 4 passed
-- `tests/api/test_products.py tests/api/test_skus.py`: 26 passed
+- Required US-B2B-05 seller/public detail scenarios: 10 passed
+- `tests/api/test_products.py tests/api/test_skus.py`: 37 passed
 
 # ADR: Seller Product Detail Shape
 
 Options considered:
 
-- One view with auth/header branching: less code, but weaker readability and the highest risk of leaking `cost_price` or `reserved_quantity` into B2C mode.
-- Two separate views/schemas: clearer code and the lowest leakage risk; this is the best future direction for seller, B2C, and interservice modes.
-- Permission/auth-mode dependency: centralizes mode detection, but adds a new framework pattern and still requires careful schema separation.
+- Keep seller JWT only on this path: lowest change, but conflicts with `flow/neomarket-b2b.yaml`, where the same product detail endpoint also supports service-key public detail.
+- Add separate public routes now: cleaner long-term separation, but public catalog routes belong to US-B2B-07 and are out of scope for this migration.
+- Use a single route with an auth-mode dependency and separate response schemas: keeps the path aligned with the authoritative detail contract while limiting the change to product detail and reducing leakage risk through schema separation.
 
-Decision: implement seller-mode only now with a seller-specific route dependency, service lookup, and response schema. Future B2C and interservice modes should use separate route handlers and schemas rather than branching this seller response.
+Decision: use a single `GET /api/v1/products/{id}` route with explicit auth-mode detection. `X-Service-Key` takes precedence when present, invalid service keys fail closed, and seller JWT handling is preserved for the no-service-key path. Seller and public modes use separate service lookups and separate response schemas so seller-only fields are not serialized in public mode.

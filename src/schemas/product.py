@@ -131,6 +131,51 @@ class SellerProductSKURead(ProductSKURead):
     pass
 
 
+class SKUPublicRead(APIModel):
+    id: uuid.UUID
+    product_id: uuid.UUID
+    name: str
+    price: int
+    discount: int
+    active_quantity: int
+    article: str | None = None
+    image: str = Field(default="", exclude=True)
+    images: list[ImageOut] = Field(default_factory=list)
+    characteristics: list[CharacteristicOut] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def add_synthetic_images(cls, value: Any) -> Any:
+        image = value.get("image") if isinstance(value, dict) else getattr(value, "image", None)
+        if not image:
+            return value
+
+        sku_id = value.get("id") if isinstance(value, dict) else getattr(value, "id")
+        image_id = uuid.uuid5(SKU_IMAGE_NAMESPACE, f"sku-image:{sku_id}:0")
+        image_data = [{"id": image_id, "url": image, "ordering": 0}]
+
+        if isinstance(value, dict):
+            value = value.copy()
+            value.setdefault("images", image_data)
+            return value
+
+        return {
+            "id": value.id,
+            "product_id": value.product_id,
+            "name": value.name,
+            "price": value.price,
+            "discount": getattr(value, "discount", 0),
+            "active_quantity": value.active_quantity,
+            "article": getattr(value, "article", None),
+            "images": image_data,
+            "characteristics": getattr(value, "characteristics", []),
+        }
+
+    @computed_field
+    @property
+    def stock_quantity(self) -> int:
+        return self.active_quantity
+
 class ProductRead(APIModel):
     id: uuid.UUID
     seller_id: uuid.UUID
@@ -173,6 +218,33 @@ class SellerProductRead(ProductRead):
     @classmethod
     def default_field_reports(cls, value):
         return [] if value is None else value
+
+
+class ProductPublicRead(APIModel):
+    id: uuid.UUID
+    seller_id: uuid.UUID
+    category_id: uuid.UUID
+    title: str
+    description: str
+    status: str
+    images: list[ImageOut] = Field(default_factory=list)
+    characteristics: list[CharacteristicOut] = Field(default_factory=list)
+    skus: list[SKUPublicRead] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+
+    @computed_field
+    @property
+    def slug(self) -> str:
+        value = re.sub(r"[^a-z0-9]+", "-", self.title.lower()).strip("-")
+        return f"{value or 'product'}-{self.id}"
+
+    @field_validator("skus", mode="before")
+    @classmethod
+    def only_active_skus(cls, value):
+        if value is None:
+            return []
+        return [sku for sku in value if getattr(sku, "active_quantity", 0) > 0]
 
 
 class ProductListRead(APIModel):

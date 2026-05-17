@@ -4,12 +4,13 @@ from fastapi import APIRouter, Depends, Response, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
-from src.api.deps import CurrentSeller, get_current_seller
+from src.api.deps import CurrentSeller, ProductDetailAccess, get_current_seller, get_product_detail_access
 from src.db.session import get_db
 from src.schemas.product import (
     ProductCreate,
     ProductCreateRead,
     ProductListRead,
+    ProductPublicRead,
     ProductResponse,
     ProductUpdate,
     SellerProductRead,
@@ -23,6 +24,7 @@ from src.services.product_service import (
     ProductOwnerError,
     create_product,
     delete_product,
+    get_public_product_by_id,
     get_seller_product_by_id,
     list_seller_products,
     update_product,
@@ -89,17 +91,19 @@ def list_products_endpoint(
     )
 
 
-@router.get("/{id}", response_model=SellerProductRead, status_code=status.HTTP_200_OK)
+@router.get("/{id}", response_model=None, status_code=status.HTTP_200_OK)
 def get_product_endpoint(
     id: uuid.UUID,
-    current_seller: CurrentSeller | JSONResponse = Depends(get_current_seller),
+    access: ProductDetailAccess | JSONResponse = Depends(get_product_detail_access),
     db: Session = Depends(get_db),
-) -> SellerProductRead | JSONResponse:
-    if isinstance(current_seller, JSONResponse):
-        return current_seller
+) -> SellerProductRead | ProductPublicRead | JSONResponse:
+    if isinstance(access, JSONResponse):
+        return access
 
     try:
-        return get_seller_product_by_id(db, id, current_seller.seller_id)
+        if access.mode == "public":
+            return ProductPublicRead.model_validate(get_public_product_by_id(db, id))
+        return SellerProductRead.model_validate(get_seller_product_by_id(db, id, access.seller_id or ""))
     except NotFoundError:
         return _error(404, "NOT_FOUND", "Product not found")
 
