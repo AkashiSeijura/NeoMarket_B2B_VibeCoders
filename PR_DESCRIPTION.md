@@ -738,17 +738,17 @@ Decision: use a grouped SQLAlchemy aggregate subquery over `SKU.product_id`, wit
 
 # US-B2B-12 Summary
 
-Implemented seller-facing `DELETE /api/v1/skus/{id}` on top of the stacked US-B2B-01 through US-B2B-11 changes. This PR depends on US-B2B-01 through US-B2B-11 until those changes are merged.
+US-B2B-12 SKU delete is migrated to the final authoritative `flow/openapi.yaml` contract. For the affected SKU delete endpoint, this contract matches the previously reviewed `neomarket-b2b.yaml` SKU delete contract.
+
+The seller-facing `DELETE /api/v1/skus/{id}` remains implemented on top of the stacked US-B2B-01 through US-B2B-11 changes. This PR depends on US-B2B-01 through US-B2B-11 until those changes are merged.
 
 The endpoint authenticates the seller from Bearer JWT claims and checks ownership through the parent product only. Missing SKUs and already-deleted SKUs return `404 {"code":"NOT_FOUND","message":"SKU not found"}`. Other sellers receive `403 NOT_OWNER`. `HARD_BLOCKED` parent products receive `403 FORBIDDEN` before active-reserve checks, including when the SKU also has reserves. SKUs with `reserved_quantity > 0` receive `409 CONFLICT` without mutation.
 
-Added a minimal `SKU.deleted` soft-delete flag and migration `0011_add_sku_deleted.py`. Successful deletes mark only `sku.deleted=true`; they do not physically delete the row and do not change `active_quantity`, `reserved_quantity`, reservation, fulfillment, invoice, or historical data. Repeated delete returns 404 to avoid duplicate side effects.
+Added a minimal `SKU.deleted` soft-delete flag and migration `0011_add_sku_deleted.py`. Successful deletes mark only `sku.deleted=true`; they do not physically delete the row and do not change `active_quantity`, `reserved_quantity`, reservation, fulfillment, invoice, or historical data. Successful SKU delete now returns `204 No Content` with an empty response body, superseding the old `200 {"ok": true}` behavior. Repeated delete returns 404 to avoid duplicate side effects.
 
 Side effects follow the required post-commit pattern. If the deleted SKU was the last non-deleted SKU on an `ON_MODERATION` product, the product returns to `CREATED` and a Moderation `DELETED` event is attempted after commit. If a `MODERATED` product SKU with positive `active_quantity` is deleted, a B2C `SKU_OUT_OF_STOCK` event is attempted after commit with a fresh UUIDv4 idempotency key. External sends are best-effort after the committed DB mutation; failures are logged and do not roll back the delete.
 
 Deleted-SKU filtering is intentionally narrow: B2C catalog product visibility and SKU serialization ignore deleted SKUs, reserve treats deleted SKUs as unavailable, and seller-list SKU aggregates count only non-deleted SKUs.
-
-OpenAPI gap: no `b2b/openapi.yaml` exists in this repository. The existing flow docs are under `flow/`, and the task scope explicitly says not to edit `flow/*`, so no OpenAPI file was changed.
 
 # US-B2B-12 Validation
 
@@ -778,9 +778,9 @@ Additional safety coverage:
 
 Suite results:
 
-- Required US-B2B-12 scenarios: 5 passed, 16 deselected
-- `tests/api/test_skus.py`: 21 passed
-- `tests/api/test_products.py tests/api/test_skus.py tests/api/test_invoices.py tests/api/test_reservations.py tests/api/test_moderation_events.py tests/api/test_fulfillment.py`: 79 passed
+- Required US-B2B-12 scenarios: 5 passed, 19 deselected
+- `tests/api/test_skus.py`: 24 passed
+- `tests/api/test_products.py tests/api/test_skus.py tests/api/test_invoices.py tests/api/test_reservations.py tests/api/test_moderation_events.py tests/api/test_fulfillment.py`: 114 passed
 
 # ADR: SKU Delete Guardrails and Soft Delete
 

@@ -1,6 +1,6 @@
 import uuid
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, Request, Response, status
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy.orm import Session
@@ -118,17 +118,17 @@ async def create_sku_endpoint(
         return _error(502, "MODERATION_UNAVAILABLE", "Moderation service unavailable")
 
 
-@router.delete("/{id}", response_model=None, status_code=status.HTTP_200_OK)
+@router.delete("/{sku_id}", response_model=None, status_code=status.HTTP_204_NO_CONTENT)
 def delete_sku_endpoint(
-    id: uuid.UUID,
+    sku_id: uuid.UUID,
     current_seller: CurrentSeller | JSONResponse = Depends(get_current_seller),
     db: Session = Depends(get_db),
-) -> dict[str, bool] | JSONResponse:
+) -> Response | JSONResponse:
     if isinstance(current_seller, JSONResponse):
         return current_seller
 
     try:
-        delete_sku(db, id, current_seller.seller_id)
+        delete_sku(db, sku_id, current_seller.seller_id)
     except NotFoundError:
         return _error(404, "NOT_FOUND", "SKU not found")
     except SKUOwnerError as exc:
@@ -138,7 +138,7 @@ def delete_sku_endpoint(
     except SKUConflictError as exc:
         return _error(409, "CONFLICT", str(exc))
 
-    return {"ok": True}
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.put("/{id}", response_model=SKURead, status_code=status.HTTP_200_OK)

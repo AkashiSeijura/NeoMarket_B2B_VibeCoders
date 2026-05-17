@@ -551,8 +551,8 @@ def test_delete_sku_succeeds(
 
     response = client.delete(f"/api/v1/skus/{sku.id}", headers=auth_headers(SELLER_ID))
 
-    assert response.status_code == 200
-    assert response.json() == {"ok": True}
+    assert response.status_code == 204
+    assert response.content == b""
 
     db_session.expire_all()
     persisted_sku = db_session.get(SKU, sku.id)
@@ -604,8 +604,8 @@ def test_last_sku_on_moderation_transitions_product_to_created(
 
     response = client.delete(f"/api/v1/skus/{sku.id}", headers=auth_headers(SELLER_ID))
 
-    assert response.status_code == 200
-    assert response.json() == {"ok": True}
+    assert response.status_code == 204
+    assert response.content == b""
 
     db_session.expire_all()
     persisted_sku = db_session.get(SKU, sku.id)
@@ -642,7 +642,8 @@ def test_new_sku_after_last_deleted_sku_starts_moderation(
         headers=auth_headers(SELLER_ID),
     )
 
-    assert delete_response.status_code == 200
+    assert delete_response.status_code == 204
+    assert delete_response.content == b""
     assert create_response.status_code == 201
     db_session.expire_all()
     persisted_product = db_session.get(Product, product.id)
@@ -689,8 +690,8 @@ def test_sku_out_of_stock_event_on_moderated_product(
 
     response = client.delete(f"/api/v1/skus/{sku.id}", headers=auth_headers(SELLER_ID))
 
-    assert response.status_code == 200
-    assert response.json() == {"ok": True}
+    assert response.status_code == 204
+    assert response.content == b""
 
     db_session.expire_all()
     persisted_sku = db_session.get(SKU, sku.id)
@@ -765,8 +766,8 @@ def test_delete_zero_stock_moderated_sku_does_not_emit_out_of_stock(
 
     response = client.delete(f"/api/v1/skus/{sku.id}", headers=auth_headers(SELLER_ID))
 
-    assert response.status_code == 200
-    assert response.json() == {"ok": True}
+    assert response.status_code == 204
+    assert response.content == b""
     db_session.expire_all()
     assert db_session.get(SKU, sku.id).deleted is True
     assert moderation_requests == []
@@ -783,7 +784,8 @@ def test_deleted_sku_filtered_from_catalog_reserve_and_seller_aggregates(
     sku = create_existing_sku(db_session, product, active_quantity=6, reserved_quantity=0)
 
     delete_response = client.delete(f"/api/v1/skus/{sku.id}", headers=auth_headers(SELLER_ID))
-    assert delete_response.status_code == 200
+    assert delete_response.status_code == 204
+    assert delete_response.content == b""
 
     catalog_response = client.get(
         "/api/v1/products",
