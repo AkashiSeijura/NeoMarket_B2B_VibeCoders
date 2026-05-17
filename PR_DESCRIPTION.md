@@ -522,4 +522,68 @@ Options considered:
 - Conditional upsert only: useful as an implementation primitive, but insufficient on its own without persisted hash, payload, and response for deterministic replay and conflict responses.
 
 Decision: use a persisted processed-events table. The service claims the idempotency key, applies the product mutation, stores the cached response, and commits in one DB transaction. B2C delivery is intentionally post-commit and best-effort.
+<<<<<<< HEAD
 >>>>>>> b9e57ad (Implement US-B2B-09 moderation decision handling)
+=======
+
+---
+
+# US-B2B-09 OpenAPI Migration Summary
+
+US-B2B-09 is migrated to the final authoritative `flow/openapi.yaml` moderation event contract. For the affected moderation event endpoint, this contract matches the previously reviewed `neomarket-b2b.yaml` moderation event contract.
+
+Migrated the inbound Moderation event API to the authoritative `flow/openapi.yaml` route while preserving the existing compatibility route. No US-B2B-10+ behavior is included.
+
+Routes:
+
+- Canonical: `POST /api/v1/moderation/events`
+- Compatibility: `POST /api/v1/events/moderation`
+
+Both routes authenticate with `X-Service-Key == settings.moderation_to_b2b_key`. Missing or invalid keys return `401 {"code":"UNAUTHORIZED","message":"Authorization required"}`.
+
+The compatibility route keeps the existing request shape (`status`, integer `product_id`, `blocking_reason`) and returns the existing `200` JSON body. The canonical route accepts the OpenAPI request shape (`event_type`, string `product_id`, `occurred_at`, `blocking_reason_id`, `moderator_comment`, `hard_block`, `field_reports`) and returns `204 No Content` with an empty body for first success and idempotent replay. Reusing an idempotency key with a different normalized payload still returns `409 CONFLICT`.
+
+Canonical boundary adapter notes:
+
+- DB product IDs remain integers; the canonical API accepts positive decimal string `product_id` values and maps them to internal integer IDs.
+- `event_type=MODERATED` maps to internal `status=MODERATED`.
+- `event_type=BLOCKED` maps to internal `status=BLOCKED`.
+- `blocking_reason_id` is enforced for `BLOCKED` events and is stored in the existing `blocking_reason` JSON object with `moderator_comment` when present.
+- `field_reports` remains optional/nullable per `flow/openapi.yaml`; missing or null values normalize to `[]`.
+
+Service semantics are unchanged: `MODERATED` clears blocking data, soft `BLOCKED` sets `BLOCKED`, hard `BLOCKED` sets `HARD_BLOCKED`, and both blocked paths emit B2C `PRODUCT_BLOCKED` only once per processed idempotency key.
+
+# US-B2B-09 OpenAPI Migration Validation
+
+Pytest proof commands:
+
+```powershell
+python -m pytest tests/api/test_moderation_events.py -vv
+python -m pytest tests/api/test_products.py tests/api/test_skus.py tests/api/test_invoices.py tests/api/test_reservations.py tests/api/test_moderation_events.py -vv
+```
+
+Required scenario results:
+
+- `test_canonical_moderated_event_returns_204_and_clears_blocking_data`: passed
+- `test_canonical_blocked_soft_returns_204_saves_field_reports_and_emits_b2c`: passed
+- `test_canonical_blocked_hard_returns_204_sets_terminal_status`: passed
+- `test_canonical_duplicate_event_same_idempotency_key_returns_204_no_duplicate_side_effects`: passed
+- `test_canonical_missing_service_key_returns_401`: passed
+- `test_canonical_payload_validation_returns_400`: passed
+- `test_legacy_moderation_event_route_still_returns_200_body`: passed
+
+Suite results:
+
+- `tests/api/test_moderation_events.py`: 16 passed
+- `tests/api/test_products.py tests/api/test_skus.py tests/api/test_invoices.py tests/api/test_reservations.py tests/api/test_moderation_events.py`: 87 passed
+
+# ADR: Moderation Event OpenAPI Migration
+
+Options considered:
+
+- Add canonical `/api/v1/moderation/events` as a route-level adapter over the existing moderation event service: selected. It aligns B2B with `flow/openapi.yaml` while reusing the tested persistence, idempotency, product state transitions, and B2C event delivery.
+- Replace `/api/v1/events/moderation`: rejected because the existing B2B flow and tests still cover that compatibility route and its `200` response body.
+- Convert internal product IDs to UUIDs: rejected for this repository slice. The DB model and surrounding services use integer IDs, so canonical decimal string IDs are parsed at the API boundary only.
+
+Decision: keep the service model stable and perform OpenAPI migration at the route/schema boundary. The canonical route normalizes request fields into the existing service payload, returns bodyless `204` responses, and preserves existing idempotency conflict behavior.
+>>>>>>> 81abea9 (Add moderation events OpenAPI route)
