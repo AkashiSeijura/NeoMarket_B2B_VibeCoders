@@ -1,3 +1,4 @@
+import re
 import uuid
 
 from fastapi import APIRouter, Depends, Header, Query, Response, status
@@ -96,14 +97,17 @@ async def create_product_endpoint(
 
 def _seller_product_list_item(item) -> SellerProductListItemRead:
     product = item.product
+    slug_value = re.sub(r"[^a-z0-9]+", "-", product.title.lower()).strip("-")
     return SellerProductListItemRead.model_validate(
         {
             "id": product.id,
             "title": product.title,
+            "slug": f"{slug_value or 'product'}-{product.id}",
             "status": product.status,
+            "category_id": product.category_id,
             "deleted": product.deleted,
-            "category": product.category,
-            "images": product.images,
+            "min_price": item.min_price,
+            "cover_image": product.images[0].url if product.images else None,
             "skus_count": item.skus_count,
             "total_active_quantity": item.total_active_quantity,
             "created_at": product.created_at,
@@ -118,6 +122,7 @@ def list_products_endpoint(
     ids: list[str] | None = Query(default=None),
     product_status: str | None = Query(default=None, alias="status"),
     search: str | None = Query(default=None),
+    include_deleted: bool = Query(default=False),
     service_key: str | None = Header(default=None, alias="X-Service-Key"),
     token: str | None = Depends(oauth2_scheme),
     db: Session = Depends(get_db),
@@ -168,6 +173,7 @@ def list_products_endpoint(
         offset=bounded_offset,
         product_status=status_filter,
         search=search,
+        include_deleted=include_deleted,
     )
     return SellerProductListRead(
         items=[_seller_product_list_item(product) for product in products],

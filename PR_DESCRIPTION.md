@@ -685,27 +685,27 @@ Decision: keep fulfillment schemas, routing, and service logic UUID-aware, remov
 
 # US-B2B-11 Summary
 
-Implemented seller product list enhancements on top of the stacked US-B2B-01 through US-B2B-10 changes. This PR depends on US-B2B-01 through US-B2B-10 until those changes are merged.
+US-B2B-11 is migrated to the final authoritative `flow/openapi.yaml` seller product list contract. For the affected seller product list endpoint, this contract matches the previously reviewed `neomarket-b2b.yaml` seller product list contract.
 
 `GET /api/v1/products` keeps the existing mode routing: a valid `X-Service-Key` uses B2C catalog mode, an invalid service key returns `401`, and no service key requires a seller Bearer JWT for seller-list mode. Seller-list mode takes `seller_id` only from JWT claims and ignores ownership query parameters such as `seller_id`, `sellerId`, `owner_id`, and `user_id`.
 
-Seller-list mode now returns only the authenticated seller's products, includes deleted products with `deleted: true`, supports `limit`/`offset` bounds, exact `status` filtering, and case-insensitive trimmed title `search`. Invalid `status` returns `400 {"code":"INVALID_REQUEST","message":"status must be valid"}`. B2C catalog behavior is unchanged and still excludes deleted products.
+Seller-list mode now returns only the authenticated seller's products, supports `limit`/`offset` bounds, exact `status` filtering, case-insensitive trimmed title `search`, and `include_deleted`. Invalid `status` returns `400 {"code":"INVALID_REQUEST","message":"status must be valid"}`. B2C catalog behavior is unchanged and still excludes deleted products.
 
-The seller-list response now uses a dedicated schema with `id`, `title`, `status`, `deleted`, `category`, `images`, `skus_count`, `total_active_quantity`, and `created_at`, plus top-level `items`, `total_count`, `limit`, and `offset`.
+`include_deleted=false` is the new default, including when the query parameter is omitted. It hides soft-deleted products from seller-list results. `include_deleted=true` is the explicit compatibility path for the old deleted-visible seller-list behavior.
 
-OpenAPI gap: `flow/b2b.yaml` is stale for this story. It documents `/api/products/my` and does not match the canonical `GET /api/v1/products` seller-list contract in `flow/b2b-flows.md#list-products`, so `flow/*` was left unchanged.
-
-Deleted visibility note: US-B2B-11 supersedes US-B2B-04's earlier minimal seller-list behavior. Seller list now includes deleted products, while B2C catalog still excludes them.
+Seller-list items now use the `ProductShortResponse`-style response shape: stringified `id`, `title`, `slug`, `status`, stringified `category_id`, `deleted`, `created_at`, `min_price`, and `cover_image`. The seller-list keeps the existing aggregate extensions `skus_count` and `total_active_quantity`. Seller-only or old nested fields such as `seller_id`, `category`, `images`, SKU `cost_price`, and `reserved_quantity` are not exposed in list items.
 
 No migration is needed.
+
+No US-B2B-12+ behavior is included: SKU delete behavior and SKU deleted filtering are unchanged.
 
 # US-B2B-11 Validation
 
 Pytest proof commands:
 
 ```powershell
-python -m pytest tests/api/test_products.py -vv -k "test_list_returns_only_own_products or test_idor_query_param_seller_id_ignored or test_deleted_products_visible_with_deleted_flag or test_status_filter_works_correctly or test_search_by_title_case_insensitive"
-python -m pytest tests/api/test_products.py -vv -k "catalog_returns_moderated_in_stock_products or catalog_excludes_hard_blocked or catalog_missing_service_key_returns_401 or catalog_response_has_no_cost_price or batch_ids_returns_visible_subset or get_moderated_product_returns_full_payload or get_others_product_returns_404"
+python -m pytest tests/api/test_products.py -vv -k "test_list_returns_only_own_products or test_idor_query_param_seller_id_ignored or test_deleted_products_hidden_by_default or test_include_deleted_true_returns_deleted_products or test_status_filter_works_correctly or test_search_by_title_case_insensitive"
+python -m pytest tests/api/test_products.py -vv
 python -m pytest tests/api/test_products.py tests/api/test_skus.py tests/api/test_invoices.py tests/api/test_reservations.py tests/api/test_moderation_events.py tests/api/test_fulfillment.py -vv
 ```
 
@@ -713,15 +713,16 @@ Required scenario results:
 
 - `test_list_returns_only_own_products`: passed
 - `test_idor_query_param_seller_id_ignored`: passed
-- `test_deleted_products_visible_with_deleted_flag`: passed
+- `test_deleted_products_hidden_by_default`: passed
+- `test_include_deleted_true_returns_deleted_products`: passed
 - `test_status_filter_works_correctly`: passed
 - `test_search_by_title_case_insensitive`: passed
 
 Regression results:
 
-- Required US-B2B-11 scenarios: 5 passed, 19 deselected
-- Catalog/detail regression selection: 7 passed, 17 deselected
-- `tests/api/test_products.py tests/api/test_skus.py tests/api/test_invoices.py tests/api/test_reservations.py tests/api/test_moderation_events.py tests/api/test_fulfillment.py`: 69 passed
+- Required US-B2B-11 scenarios: 6 passed, 30 deselected
+- `tests/api/test_products.py`: 36 passed
+- `tests/api/test_products.py tests/api/test_skus.py tests/api/test_invoices.py tests/api/test_reservations.py tests/api/test_moderation_events.py tests/api/test_fulfillment.py`: 104 passed
 
 # ADR: Seller List SKU Aggregates
 

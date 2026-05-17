@@ -328,13 +328,19 @@ class PublicProductBatchRequest(APIModel):
 class SellerProductListItemRead(APIModel):
     id: uuid.UUID
     title: str
+    slug: str
     status: str
+    category_id: int
     deleted: bool
-    category: CategoryOut
-    images: list[ImageOut] = Field(default_factory=list)
+    min_price: int | None = None
+    cover_image: str | None = None
     skus_count: int
     total_active_quantity: int
     created_at: datetime
+
+    @field_serializer("id", "category_id")
+    def serialize_id(self, value: int) -> str:
+        return str(value)
 
 
 class ProductListRead(APIModel):

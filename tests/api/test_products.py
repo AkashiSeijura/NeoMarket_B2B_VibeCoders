@@ -882,22 +882,36 @@ def test_list_returns_only_own_products(
     assert str(other_product.id) not in [item["id"] for item in body["items"]]
 
     first_item = body["items"][0]
+    assert set(first_item) == {
+        "id",
+        "title",
+        "slug",
+        "status",
+        "category_id",
+        "deleted",
+        "min_price",
+        "cover_image",
+        "skus_count",
+        "total_active_quantity",
+        "created_at",
+    }
     assert first_item["title"] == own_product.title
+    assert first_item["slug"] == f"iphone-15-pro-max-{own_product.id}"
     assert first_item["status"] == "CREATED"
+    assert first_item["category_id"] == str(own_product.category_id)
     assert first_item["deleted"] is False
-    assert first_item["category"] == {"id": str(own_product.category.id), "name": own_product.category.name}
-    assert first_item["images"] == [
-        {
-            "id": str(own_product.images[0].id),
-            "url": "/s3/iphone15-front.jpg",
-            "ordering": 0,
-        }
-    ]
+    assert first_item["min_price"] == 9999000
+    assert first_item["cover_image"] == "/s3/iphone15-front.jpg"
     assert first_item["skus_count"] == 2
     assert first_item["total_active_quantity"] == 5
     assert "created_at" in first_item
+    assert "seller_id" not in first_item
+    assert "category" not in first_item
+    assert "images" not in first_item
 
     second_item = body["items"][1]
+    assert second_item["min_price"] is None
+    assert second_item["cover_image"] == "/s3/iphone15-front.jpg"
     assert second_item["skus_count"] == 0
     assert second_item["total_active_quantity"] == 0
 
@@ -929,7 +943,7 @@ def test_idor_query_param_seller_id_ignored(
     assert str(other_product.id) not in [item["id"] for item in body["items"]]
 
 
-def test_deleted_products_visible_with_deleted_flag(
+def test_deleted_products_hidden_by_default(
     client,
     db_session: Session,
     test_product_factory,
@@ -951,12 +965,40 @@ def test_deleted_products_visible_with_deleted_flag(
 
     assert list_response.status_code == 200
     body = list_response.json()
-    assert body["total_count"] == 2
-    assert [item["id"] for item in body["items"]] == [str(visible_product.id), str(deleted_product.id)]
-    assert [item["deleted"] for item in body["items"]] == [False, True]
+    assert body["total_count"] == 1
+    assert [item["id"] for item in body["items"]] == [str(visible_product.id)]
 
     db_session.refresh(deleted_product)
     assert deleted_product.deleted is True
+
+
+def test_include_deleted_true_returns_deleted_products(
+    client,
+    test_product_factory,
+    auth_headers,
+    test_event_requests,
+):
+    visible_product = test_product_factory()
+    deleted_product = test_product_factory()
+
+    response = client.delete(f"/api/v1/products/{deleted_product.id}", headers=auth_headers(SELLER_ID))
+    assert response.status_code == 204
+    assert response.content == b""
+
+    list_response = client.get(
+        "/api/v1/products",
+        params={
+            "include_deleted": "true",
+            "seller_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        },
+        headers=auth_headers(SELLER_ID),
+    )
+
+    assert list_response.status_code == 200
+    body = list_response.json()
+    assert body["total_count"] == 2
+    assert [item["id"] for item in body["items"]] == [str(visible_product.id), str(deleted_product.id)]
+    assert [item["deleted"] for item in body["items"]] == [False, True]
 
 
 def test_status_filter_works_correctly(client, test_product_factory, auth_headers):

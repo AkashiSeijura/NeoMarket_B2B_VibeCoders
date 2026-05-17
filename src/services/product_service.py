@@ -46,6 +46,7 @@ class SellerProductListItem:
     product: Product
     skus_count: int
     total_active_quantity: int
+    min_price: int | None
 
 
 def _product_query():
@@ -109,8 +110,11 @@ def list_seller_products(
     *,
     product_status: ProductStatus | None = None,
     search: str | None = None,
+    include_deleted: bool = False,
 ) -> tuple[list[SellerProductListItem], int]:
     filters = [Product.seller_id == seller_id]
+    if not include_deleted:
+        filters.append(Product.deleted.is_(False))
     if product_status is not None:
         filters.append(Product.status == product_status)
 
@@ -125,6 +129,7 @@ def list_seller_products(
             SKU.product_id.label("product_id"),
             func.count(SKU.id).label("skus_count"),
             func.coalesce(func.sum(SKU.active_quantity), 0).label("total_active_quantity"),
+            func.min(SKU.price).label("min_price"),
         )
         .group_by(SKU.product_id)
         .subquery()
@@ -135,9 +140,9 @@ def list_seller_products(
             Product,
             func.coalesce(sku_aggregates.c.skus_count, 0).label("skus_count"),
             func.coalesce(sku_aggregates.c.total_active_quantity, 0).label("total_active_quantity"),
+            sku_aggregates.c.min_price.label("min_price"),
         )
         .options(
-            selectinload(Product.category),
             selectinload(Product.images),
         )
         .outerjoin(sku_aggregates, sku_aggregates.c.product_id == Product.id)
@@ -152,6 +157,7 @@ def list_seller_products(
             product=row[0],
             skus_count=int(row.skus_count or 0),
             total_active_quantity=int(row.total_active_quantity or 0),
+            min_price=row.min_price,
         )
         for row in rows
     ]
