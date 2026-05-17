@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from src.api.deps import unauthorized_response
 from src.core.config import settings
 from src.db.session import get_db
-from src.schemas.reservation import ReservationRead, UnreserveRead
+from src.schemas.reservation import InventoryOrderRead, InventoryReserveRead, ReservationRead, UnreserveRead
 from src.services.reservation_service import (
     IdempotencyConflictError,
     ReservationConflictError,
@@ -25,6 +25,17 @@ def _error(status_code: int, code: str, message: str) -> JSONResponse:
 
 def _invalid_request(message: str) -> JSONResponse:
     return _error(400, "INVALID_REQUEST", message)
+
+
+def _inventory_reserve_conflict(response: dict[str, Any]) -> JSONResponse:
+    return JSONResponse(
+        status_code=409,
+        content={
+            "code": "CONFLICT",
+            "message": "Unable to reserve inventory",
+            "details": {"failed_items": response.get("failed_items", [])},
+        },
+    )
 
 
 def _validate_service_key(service_key: str | None) -> JSONResponse | None:
@@ -72,7 +83,18 @@ def _parse_items(body: dict[str, Any]) -> list[dict[str, int]] | JSONResponse:
     return items
 
 
-async def _parse_reserve_payload(request: Request) -> tuple[str, list[dict[str, int]]] | JSONResponse:
+def _parse_order_id(body: dict[str, Any]) -> str | JSONResponse:
+    order_id = body.get("order_id")
+    if not isinstance(order_id, str) or not order_id.strip():
+        return _invalid_request("order_id is required")
+    return order_id.strip()
+
+
+async def _parse_reserve_payload(
+    request: Request,
+    *,
+    require_order_id: bool = False,
+) -> tuple[str, list[dict[str, int]]] | tuple[str, str, list[dict[str, int]]] | JSONResponse:
     body = await _json_body(request)
     if isinstance(body, JSONResponse):
         return body
@@ -80,10 +102,15 @@ async def _parse_reserve_payload(request: Request) -> tuple[str, list[dict[str, 
     idempotency_key = body.get("idempotency_key")
     if not isinstance(idempotency_key, str) or not idempotency_key.strip():
         return _invalid_request("idempotency_key is required")
+    parsed_order_id = _parse_order_id(body) if require_order_id else None
+    if isinstance(parsed_order_id, JSONResponse):
+        return parsed_order_id
 
     items = _parse_items(body)
     if isinstance(items, JSONResponse):
         return items
+    if parsed_order_id is not None:
+        return idempotency_key.strip(), parsed_order_id, items
     return idempotency_key.strip(), items
 
 
@@ -125,6 +152,33 @@ async def reserve_endpoint(
         return _error(409, "CONFLICT", str(exc))
 
 
+@router.post(
+    "/api/v1/inventory/reserve",
+    response_model=InventoryReserveRead,
+    status_code=status.HTTP_200_OK,
+)
+async def inventory_reserve_endpoint(
+    request: Request,
+    service_key: str | None = Header(default=None, alias="X-Service-Key"),
+    db: Session = Depends(get_db),
+) -> InventoryReserveRead | JSONResponse:
+    auth_error = _validate_service_key(service_key)
+    if auth_error is not None:
+        return auth_error
+
+    payload = await _parse_reserve_payload(request, require_order_id=True)
+    if isinstance(payload, JSONResponse):
+        return payload
+    idempotency_key, order_id, items = payload
+
+    try:
+        return reserve_skus(db, idempotency_key, items, order_id=order_id)
+    except ReservationConflictError as exc:
+        return _inventory_reserve_conflict(exc.response)
+    except IdempotencyConflictError as exc:
+        return _error(409, "CONFLICT", str(exc))
+
+
 @router.post("/api/v1/unreserve", response_model=UnreserveRead, status_code=status.HTTP_200_OK)
 async def unreserve_endpoint(
     request: Request,
@@ -142,5 +196,30 @@ async def unreserve_endpoint(
 
     try:
         return unreserve_skus(db, items)
+    except UnreserveConflictError:
+        return _error(409, "CONFLICT", "Insufficient reserved quantity")
+
+
+@router.post(
+    "/api/v1/inventory/unreserve",
+    response_model=InventoryOrderRead,
+    status_code=status.HTTP_200_OK,
+)
+async def inventory_unreserve_endpoint(
+    request: Request,
+    service_key: str | None = Header(default=None, alias="X-Service-Key"),
+    db: Session = Depends(get_db),
+) -> InventoryOrderRead | JSONResponse:
+    auth_error = _validate_service_key(service_key)
+    if auth_error is not None:
+        return auth_error
+
+    payload = await _parse_unreserve_payload(request)
+    if isinstance(payload, JSONResponse):
+        return payload
+    order_id, items = payload
+
+    try:
+        return unreserve_skus(db, items, order_id=order_id)
     except UnreserveConflictError:
         return _error(409, "CONFLICT", "Insufficient reserved quantity")

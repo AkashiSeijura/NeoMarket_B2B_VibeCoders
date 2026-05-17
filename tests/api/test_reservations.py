@@ -1,3 +1,6 @@
+from datetime import datetime
+from uuid import uuid4
+
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -75,6 +78,14 @@ def reserve_payload(idempotency_key: str, sku: SKU, quantity: int = 2) -> dict:
     }
 
 
+def inventory_reserve_payload(order_id: str, idempotency_key: str, sku: SKU, quantity: int = 2) -> dict:
+    return {
+        "idempotency_key": idempotency_key,
+        "order_id": order_id,
+        "items": [{"sku_id": sku.id, "quantity": quantity}],
+    }
+
+
 def unreserve_payload(order_id: str, sku: SKU, quantity: int = 2) -> dict:
     return {
         "order_id": order_id,
@@ -129,6 +140,178 @@ def test_reserve_all_skus_succeeds(client, db_session: Session, category_factory
     assert_sku_quantities(db_session, first_sku.id, active_quantity=3, reserved_quantity=3)
     assert_sku_quantities(db_session, second_sku.id, active_quantity=2, reserved_quantity=1)
     assert reserve_operation_count(db_session) == 1
+
+
+def test_inventory_reserve_returns_openapi_response(client, db_session: Session, category_factory):
+    product = create_product(db_session, category_factory)
+    sku = create_sku(db_session, product, active_quantity=5, reserved_quantity=1)
+    order_id = str(uuid4())
+
+    response = client.post(
+        "/api/v1/inventory/reserve",
+        json=inventory_reserve_payload(order_id, str(uuid4()), sku, 2),
+        headers=service_headers(),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["order_id"] == order_id
+    assert body["status"] == "RESERVED"
+    assert datetime.fromisoformat(body["reserved_at"])
+    assert_sku_quantities(db_session, sku.id, active_quantity=3, reserved_quantity=3)
+
+
+def test_inventory_reserve_requires_order_id(client, db_session: Session, category_factory):
+    product = create_product(db_session, category_factory)
+    sku = create_sku(db_session, product, active_quantity=5)
+
+    response = client.post(
+        "/api/v1/inventory/reserve",
+        json=reserve_payload(str(uuid4()), sku, 2),
+        headers=service_headers(),
+    )
+
+    assert response.status_code == 400
+    assert response.json() == {"code": "INVALID_REQUEST", "message": "order_id is required"}
+    assert_sku_quantities(db_session, sku.id, active_quantity=5, reserved_quantity=0)
+
+
+def test_inventory_reserve_idempotent_replay_returns_same_reserved_at_without_double_deduction(
+    client,
+    db_session: Session,
+    category_factory,
+):
+    product = create_product(db_session, category_factory)
+    sku = create_sku(db_session, product, active_quantity=5)
+    payload = inventory_reserve_payload(str(uuid4()), str(uuid4()), sku, 2)
+
+    first_response = client.post("/api/v1/inventory/reserve", json=payload, headers=service_headers())
+    second_response = client.post("/api/v1/inventory/reserve", json=payload, headers=service_headers())
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert second_response.json() == first_response.json()
+    assert_sku_quantities(db_session, sku.id, active_quantity=3, reserved_quantity=2)
+    assert reserve_operation_count(db_session) == 1
+
+
+def test_inventory_reserve_same_key_different_order_id_returns_409(
+    client,
+    db_session: Session,
+    category_factory,
+):
+    product = create_product(db_session, category_factory)
+    sku = create_sku(db_session, product, active_quantity=5)
+    idempotency_key = str(uuid4())
+
+    first_response = client.post(
+        "/api/v1/inventory/reserve",
+        json=inventory_reserve_payload(str(uuid4()), idempotency_key, sku, 1),
+        headers=service_headers(),
+    )
+    second_response = client.post(
+        "/api/v1/inventory/reserve",
+        json=inventory_reserve_payload(str(uuid4()), idempotency_key, sku, 1),
+        headers=service_headers(),
+    )
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 409
+    assert second_response.json() == {
+        "code": "CONFLICT",
+        "message": "idempotency_key was already used with a different payload",
+    }
+    assert_sku_quantities(db_session, sku.id, active_quantity=4, reserved_quantity=1)
+
+
+def test_inventory_reserve_conflict_returns_error_with_failed_items_details_and_rolls_back(
+    client,
+    db_session: Session,
+    category_factory,
+):
+    product = create_product(db_session, category_factory)
+    enough_sku = create_sku(db_session, product, active_quantity=5, reserved_quantity=1)
+    low_sku = create_sku(db_session, product, name="256GB Black", active_quantity=1)
+
+    response = client.post(
+        "/api/v1/inventory/reserve",
+        json={
+            "idempotency_key": str(uuid4()),
+            "order_id": str(uuid4()),
+            "items": [
+                {"sku_id": enough_sku.id, "quantity": 2},
+                {"sku_id": low_sku.id, "quantity": 2},
+            ],
+        },
+        headers=service_headers(),
+    )
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "code": "CONFLICT",
+        "message": "Unable to reserve inventory",
+        "details": {
+            "failed_items": [
+                {
+                    "sku_id": low_sku.id,
+                    "requested": 2,
+                    "available": 1,
+                    "reason": "INSUFFICIENT_STOCK",
+                }
+            ]
+        },
+    }
+    assert_sku_quantities(db_session, enough_sku.id, active_quantity=5, reserved_quantity=1)
+    assert_sku_quantities(db_session, low_sku.id, active_quantity=1, reserved_quantity=0)
+    assert reserve_operation_count(db_session) == 0
+
+
+def test_inventory_unreserve_returns_openapi_response(client, db_session: Session, category_factory):
+    product = create_product(db_session, category_factory)
+    sku = create_sku(db_session, product, active_quantity=3, reserved_quantity=5)
+    order_id = str(uuid4())
+
+    response = client.post(
+        "/api/v1/inventory/unreserve",
+        json=unreserve_payload(order_id, sku, 2),
+        headers=service_headers(),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["order_id"] == order_id
+    assert body["status"] == "UNRESERVED"
+    assert datetime.fromisoformat(body["processed_at"])
+    assert_sku_quantities(db_session, sku.id, active_quantity=5, reserved_quantity=3)
+
+
+def test_legacy_reserve_and_unreserve_routes_keep_response_shapes(
+    client,
+    db_session: Session,
+    category_factory,
+):
+    product = create_product(db_session, category_factory)
+    sku = create_sku(db_session, product, active_quantity=5)
+
+    reserve_response = client.post(
+        "/api/v1/reserve",
+        json=reserve_payload("legacy-shape", sku, 2),
+        headers=service_headers(),
+    )
+    unreserve_response = client.post(
+        "/api/v1/unreserve",
+        json=unreserve_payload("legacy-order", sku, 1),
+        headers=service_headers(),
+    )
+
+    assert reserve_response.status_code == 200
+    assert reserve_response.json() == {
+        "reserved": True,
+        "items": [{"sku_id": sku.id, "reserved_quantity": 2, "remaining_stock": 3}],
+    }
+    assert unreserve_response.status_code == 200
+    assert unreserve_response.json() == {"ok": True}
+    assert_sku_quantities(db_session, sku.id, active_quantity=4, reserved_quantity=1)
 
 
 def test_partial_insufficient_stock_returns_409_all_rollback(

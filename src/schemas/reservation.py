@@ -1,3 +1,5 @@
+from datetime import datetime
+
 from pydantic import Field
 
 from src.schemas.common import APIModel
@@ -28,3 +30,15 @@ class ReservationConflictRead(APIModel):
 
 class UnreserveRead(APIModel):
     ok: bool
+
+
+class InventoryReserveRead(APIModel):
+    order_id: str
+    status: str
+    reserved_at: datetime
+
+
+class InventoryOrderRead(APIModel):
+    order_id: str
+    status: str
+    processed_at: datetime

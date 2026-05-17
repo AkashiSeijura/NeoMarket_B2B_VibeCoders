@@ -1,6 +1,7 @@
 import hashlib
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy import select
@@ -39,11 +40,18 @@ def _normalized_items(items: list[dict[str, int]]) -> list[dict[str, int]]:
     ]
 
 
-def _normalized_reserve_payload(idempotency_key: str, items: list[dict[str, int]]) -> dict[str, Any]:
-    return {
+def _normalized_reserve_payload(
+    idempotency_key: str,
+    items: list[dict[str, int]],
+    order_id: str | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
         "idempotency_key": idempotency_key,
         "items": _normalized_items(items),
     }
+    if order_id is not None:
+        payload["order_id"] = order_id
+    return payload
 
 
 def _request_hash(payload: dict[str, Any]) -> str:
@@ -51,9 +59,29 @@ def _request_hash(payload: dict[str, Any]) -> str:
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def _cached_response_or_conflict(operation: ReserveOperation, request_hash: str) -> dict[str, Any]:
+def _timestamp(value: datetime) -> str:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.isoformat()
+
+
+def _canonical_reserve_response(operation: ReserveOperation, order_id: str) -> dict[str, Any]:
+    return {
+        "order_id": order_id,
+        "status": "RESERVED",
+        "reserved_at": _timestamp(operation.created_at),
+    }
+
+
+def _cached_response_or_conflict(
+    operation: ReserveOperation,
+    request_hash: str,
+    order_id: str | None = None,
+) -> dict[str, Any]:
     if operation.request_hash != request_hash:
         raise IdempotencyConflictError("idempotency_key was already used with a different payload")
+    if order_id is not None:
+        return _canonical_reserve_response(operation, order_id)
     return operation.response
 
 
@@ -105,14 +133,19 @@ def _reserve_conflicts(items: list[dict[str, int]], sku_map: dict[int, SKU]) -> 
     return failed_items
 
 
-def reserve_skus(db: Session, idempotency_key: str, items: list[dict[str, int]]) -> dict[str, Any]:
-    normalized_payload = _normalized_reserve_payload(idempotency_key, items)
+def reserve_skus(
+    db: Session,
+    idempotency_key: str,
+    items: list[dict[str, int]],
+    order_id: str | None = None,
+) -> dict[str, Any]:
+    normalized_payload = _normalized_reserve_payload(idempotency_key, items, order_id)
     normalized_items = normalized_payload["items"]
     request_hash = _request_hash(normalized_payload)
 
     existing_operation = db.get(ReserveOperation, idempotency_key)
     if existing_operation is not None:
-        return _cached_response_or_conflict(existing_operation, request_hash)
+        return _cached_response_or_conflict(existing_operation, request_hash, order_id)
 
     operation = ReserveOperation(
         idempotency_key=idempotency_key,
@@ -129,7 +162,7 @@ def reserve_skus(db: Session, idempotency_key: str, items: list[dict[str, int]])
         existing_operation = db.get(ReserveOperation, idempotency_key)
         if existing_operation is None:
             raise IdempotencyConflictError("idempotency_key is currently being processed")
-        return _cached_response_or_conflict(existing_operation, request_hash)
+        return _cached_response_or_conflict(existing_operation, request_hash, order_id)
 
     sku_ids = [item["sku_id"] for item in normalized_items]
     sku_map = _lock_skus(db, sku_ids)
@@ -158,6 +191,8 @@ def reserve_skus(db: Session, idempotency_key: str, items: list[dict[str, int]])
     response: dict[str, Any] = {"reserved": True, "items": response_items}
     operation.response = response
     db.commit()
+    if order_id is not None:
+        db.refresh(operation)
 
     for product_id, sku_id in out_of_stock_events:
         try:
@@ -169,10 +204,16 @@ def reserve_skus(db: Session, idempotency_key: str, items: list[dict[str, int]])
         except Exception:
             logger.exception("Failed to send SKU_OUT_OF_STOCK event to B2C")
 
+    if order_id is not None:
+        return _canonical_reserve_response(operation, order_id)
     return response
 
 
-def unreserve_skus(db: Session, items: list[dict[str, int]]) -> dict[str, bool]:
+def unreserve_skus(
+    db: Session,
+    items: list[dict[str, int]],
+    order_id: str | None = None,
+) -> dict[str, Any]:
     normalized_items = _normalized_items(items)
     sku_ids = [item["sku_id"] for item in normalized_items]
     sku_map = _lock_skus(db, sku_ids)
@@ -190,4 +231,10 @@ def unreserve_skus(db: Session, items: list[dict[str, int]]) -> dict[str, bool]:
         sku.reserved_quantity -= quantity
 
     db.commit()
+    if order_id is not None:
+        return {
+            "order_id": order_id,
+            "status": "UNRESERVED",
+            "processed_at": _timestamp(datetime.now(timezone.utc)),
+        }
     return {"ok": True}
