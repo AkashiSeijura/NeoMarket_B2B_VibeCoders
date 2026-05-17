@@ -49,7 +49,7 @@ def create_invoice(db: Session, payload: InvoiceCreate, seller_id: str) -> Invoi
         if product.deleted or product.status != ProductStatus.MODERATED:
             raise ValidationError("Invoice can only be created for MODERATED products")
 
-    invoice = Invoice(reference=payload.reference, seller_id=seller_id, status=InvoiceStatus.PENDING)
+    invoice = Invoice(reference=payload.reference, seller_id=seller_id, status=InvoiceStatus.CREATED)
     invoice.items = [InvoiceItem(sku_id=item.sku_id, quantity=item.quantity) for item in payload.items]
 
     db.add(invoice)

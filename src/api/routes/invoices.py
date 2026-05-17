@@ -69,3 +69,8 @@ async def create_invoice_endpoint(
 @router.post("/accept", response_model=InvoiceRead, status_code=status.HTTP_200_OK)
 def accept_invoice_endpoint(payload: InvoiceAccept, db: Session = Depends(get_db)) -> InvoiceRead:
     return accept_invoice(db, payload.invoice_id)
+
+
+@router.post("/{invoice_id}/accept", response_model=InvoiceRead, status_code=status.HTTP_200_OK)
+def accept_invoice_path_endpoint(invoice_id: int, db: Session = Depends(get_db)) -> InvoiceRead:
+    return accept_invoice(db, invoice_id)

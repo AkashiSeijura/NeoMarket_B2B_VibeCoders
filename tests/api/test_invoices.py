@@ -86,7 +86,7 @@ def test_create_invoice_with_moderated_sku_returns_201(
     body = response.json()
     assert body["seller_id"] == SELLER_ID
     assert body["seller_id"] != OTHER_SELLER_ID
-    assert body["status"] == "PENDING"
+    assert body["status"] == "CREATED"
     assert "created_at" in body
     assert body["items"] == [
         {
@@ -102,7 +102,7 @@ def test_create_invoice_with_moderated_sku_returns_201(
     persisted_sku = db_session.get(SKU, sku.id)
     assert persisted_invoice is not None
     assert persisted_invoice.seller_id == SELLER_ID
-    assert persisted_invoice.status == "PENDING"
+    assert persisted_invoice.status == "CREATED"
     assert len(persisted_invoice.items) == 1
     assert persisted_invoice.items[0].quantity == 10
     assert persisted_invoice.items[0].accepted_quantity is None
@@ -271,3 +271,66 @@ def test_invalid_mixed_items_do_not_create_partial_invoice(
     db_session.refresh(valid_sku)
     assert valid_sku.active_quantity == 8
     assert valid_sku.reserved_quantity == 1
+
+
+def test_accept_invoice_path_alias_accepts_invoice(
+    client,
+    db_session: Session,
+    category_factory,
+    auth_headers,
+):
+    product = create_product(db_session, category_factory, status=ProductStatus.MODERATED)
+    sku = create_sku(db_session, product, active_quantity=4, reserved_quantity=1)
+    create_response = client.post(
+        "/api/v1/invoices",
+        json={"items": [{"sku_id": sku.id, "quantity": 6}]},
+        headers=auth_headers(SELLER_ID),
+    )
+    invoice_id = create_response.json()["id"]
+
+    response = client.post(f"/api/v1/invoices/{invoice_id}/accept")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id"] == invoice_id
+    assert body["status"] == "ACCEPTED"
+    assert body["items"] == [{"skuId": sku.id, "quantity": 6}]
+
+    db_session.expire_all()
+    persisted_invoice = db_session.get(Invoice, invoice_id)
+    persisted_sku = db_session.get(SKU, sku.id)
+    assert persisted_invoice is not None
+    assert persisted_invoice.status == "ACCEPTED"
+    assert persisted_invoice.accepted_at is not None
+    assert persisted_sku.active_quantity == 10
+    assert persisted_sku.reserved_quantity == 1
+
+
+def test_legacy_accept_route_still_works(
+    client,
+    db_session: Session,
+    category_factory,
+    auth_headers,
+):
+    product = create_product(db_session, category_factory, status=ProductStatus.MODERATED)
+    sku = create_sku(db_session, product, active_quantity=2, reserved_quantity=0)
+    create_response = client.post(
+        "/api/v1/invoices",
+        json={"items": [{"sku_id": sku.id, "quantity": 3}]},
+        headers=auth_headers(SELLER_ID),
+    )
+    invoice_id = create_response.json()["id"]
+
+    response = client.post("/api/v1/invoices/accept", json={"invoice_id": invoice_id})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id"] == invoice_id
+    assert body["status"] == "ACCEPTED"
+
+    db_session.expire_all()
+    persisted_invoice = db_session.get(Invoice, invoice_id)
+    persisted_sku = db_session.get(SKU, sku.id)
+    assert persisted_invoice is not None
+    assert persisted_invoice.status == "ACCEPTED"
+    assert persisted_sku.active_quantity == 5

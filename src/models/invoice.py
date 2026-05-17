@@ -10,7 +10,6 @@ from src.models.base import Base
 
 
 class InvoiceStatus(str, Enum):
-    PENDING = "PENDING"
     CREATED = "CREATED"
     ACCEPTED = "ACCEPTED"
 
@@ -24,7 +23,7 @@ class Invoice(Base):
     status: Mapped[InvoiceStatus] = mapped_column(
         SqlEnum(InvoiceStatus, name="invoice_status"),
         nullable=False,
-        default=InvoiceStatus.PENDING,
+        default=InvoiceStatus.CREATED,
     )
     accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
