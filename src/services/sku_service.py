@@ -99,6 +99,8 @@ def _apply_sku_updates(sku: SKU, payload: SKUUpdate) -> None:
         sku.cost_price = payload.cost_price
     if payload.discount is not None:
         sku.discount = payload.discount
+    if payload.article is not None:
+        sku.article = payload.article
     if payload.image is not None:
         sku.image = payload.image
     if payload.active_quantity is not None:

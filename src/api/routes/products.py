@@ -78,3 +78,23 @@ def update_product_endpoint(
         return _error(403, "FORBIDDEN", str(exc))
     except ModerationUnavailableError:
         return _error(502, "MODERATION_UNAVAILABLE", "Moderation service unavailable")
+
+
+@router.patch("/{product_id}", response_model=ProductRead, status_code=status.HTTP_200_OK)
+def patch_product_endpoint(
+    product_id: int,
+    payload: ProductUpdate,
+    current_seller: CurrentSeller | JSONResponse = Depends(get_current_seller),
+    db: Session = Depends(get_db),
+) -> ProductRead | JSONResponse:
+    if isinstance(current_seller, JSONResponse):
+        return current_seller
+
+    try:
+        return update_product(db, product_id, payload, current_seller.seller_id)
+    except ProductOwnerError as exc:
+        return _error(403, "NOT_OWNER", str(exc))
+    except ProductForbiddenError as exc:
+        return _error(403, "FORBIDDEN", str(exc))
+    except ModerationUnavailableError:
+        return _error(502, "MODERATION_UNAVAILABLE", "Moderation service unavailable")

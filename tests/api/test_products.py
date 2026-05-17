@@ -1,8 +1,60 @@
 from uuid import UUID, uuid4
 
+import pytest
 from sqlalchemy.orm import Session
 
 from src.models import Product, ProductCharacteristic, ProductImage, ProductStatus, SKU, SKUCharacteristic
+
+
+SELLER_ID = "c3d4e5f6-a7b8-9012-cdef-123456789012"
+
+
+class FakeModerationResponse:
+    def raise_for_status(self) -> None:
+        return None
+
+
+@pytest.fixture()
+def moderation_requests(monkeypatch):
+    requests = []
+
+    def fake_post(url, json, headers, timeout):
+        requests.append(
+            {
+                "url": url,
+                "json": json,
+                "headers": headers,
+                "timeout": timeout,
+            }
+        )
+        return FakeModerationResponse()
+
+    monkeypatch.setattr("src.services.moderation_service.httpx.post", fake_post)
+    return requests
+
+
+@pytest.fixture()
+def product_factory(db_session: Session, category_factory):
+    def create_product(
+        *,
+        seller_id: str = SELLER_ID,
+        status: ProductStatus = ProductStatus.CREATED,
+    ) -> Product:
+        category = category_factory()
+        product = Product(
+            title="iPhone 15 Pro Max",
+            description="Flagship smartphone",
+            seller_id=seller_id,
+            category_id=category.id,
+            status=status,
+        )
+        product.images = [ProductImage(url="/s3/iphone15-front.jpg", ordering=0)]
+        db_session.add(product)
+        db_session.commit()
+        db_session.refresh(product)
+        return product
+
+    return create_product
 
 
 def _assert_validation_error(response):
@@ -46,7 +98,7 @@ def test_create_product_returns_201_with_created_status(client, category_factory
     assert body["characteristics"][0]["id"]
     assert body["characteristics"][0]["name"] == payload["characteristics"][0]["name"]
     assert body["characteristics"][0]["value"] == payload["characteristics"][0]["value"]
-    assert body["seller_id"] == "c3d4e5f6-a7b8-9012-cdef-123456789012"
+    assert body["seller_id"] == SELLER_ID
     _assert_product_response_contract(body)
     assert "created_at" in body
     assert "updated_at" in body
@@ -209,3 +261,60 @@ def test_invalid_title_and_description_return_422_validation_error(
     response = client.post("/api/v1/products", json=payload, headers=auth_headers())
     _assert_validation_error(response)
     assert "description" in response.json()["message"]
+
+
+def test_patch_product_alias_returns_to_on_moderation(
+    client,
+    db_session: Session,
+    product_factory,
+    auth_headers,
+    moderation_requests,
+):
+    product = product_factory(status=ProductStatus.MODERATED)
+
+    response = client.patch(
+        f"/api/v1/products/{str(product.id)}",
+        json={"title": "iPhone 15 Pro Max Updated", "seller_id": "body-seller"},
+        headers=auth_headers(SELLER_ID),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["title"] == "iPhone 15 Pro Max Updated"
+    assert body["seller_id"] == SELLER_ID
+    assert body["status"] == "ON_MODERATION"
+
+    db_session.refresh(product)
+    assert product.status == ProductStatus.ON_MODERATION
+    assert len(moderation_requests) == 1
+    event = moderation_requests[0]["json"]
+    assert event["product_id"] == str(product.id)
+    assert event["seller_id"] == SELLER_ID
+    assert event["event"] == "EDITED"
+    assert event["idempotency_key"]
+
+
+def test_legacy_put_product_edit_route_remains_supported(
+    client,
+    db_session: Session,
+    product_factory,
+    auth_headers,
+    moderation_requests,
+):
+    product = product_factory(status=ProductStatus.BLOCKED)
+
+    response = client.put(
+        f"/api/v1/products/{str(product.id)}",
+        json={"description": "Updated description"},
+        headers=auth_headers(SELLER_ID),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["description"] == "Updated description"
+    assert body["status"] == "ON_MODERATION"
+
+    db_session.refresh(product)
+    assert product.status == ProductStatus.ON_MODERATION
+    assert len(moderation_requests) == 1
+    assert moderation_requests[0]["json"]["event"] == "EDITED"

@@ -32,6 +32,7 @@ class SKUUpdate(APIModel):
     price: int | None = Field(default=None, ge=0)
     cost_price: int | None = Field(default=None, ge=0)
     discount: int | None = Field(default=None, ge=0)
+    article: str | None = Field(default=None, max_length=255)
     image: str | None = None
     active_quantity: int | None = Field(
         default=None,

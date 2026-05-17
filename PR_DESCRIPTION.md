@@ -93,11 +93,13 @@ Decision: use synchronous POST for the first iteration. The outbox pattern is th
 
 # US-B2B-03 Summary
 
-Implemented authenticated edit behavior for `PUT /api/v1/products/{id}` and `PUT /api/v1/skus/{id}` on top of US-B2B-01 and US-B2B-02. This stacked PR depends on both US-B2B-01 and US-B2B-02 until they are merged into `dev`.
+Migrated authenticated edit behavior to the authoritative `flow/neomarket-b2b.yaml` contract: `PATCH /api/v1/products/{product_id}` and `PATCH /api/v1/skus/{sku_id}` are now the canonical US-B2B-03 edit endpoints. Existing `PUT /api/v1/products/{id}`, `PUT /api/v1/skus/{id}`, and legacy `PUT /api/v1/skus` remain supported for compatibility. This stacked PR depends on both US-B2B-01 and US-B2B-02 until they are merged into `dev`.
 
 Product edits ignore body `seller_id`, use the Bearer JWT `seller_id` claim for ownership, reject edits to another seller's product, and reject `HARD_BLOCKED` products without persisting changes or sending Moderation events. Edits to `MODERATED` and `BLOCKED` products return the product to `ON_MODERATION` and send a Moderation `EDITED` event.
 
-SKU edits ignore body `reserved_quantity`, `product_id`, and `seller_id` before validation, preserve persisted `reserved_quantity` and `product_id`, check ownership through the parent product, and reject SKUs whose parent product is `HARD_BLOCKED`. Edits to SKUs under `MODERATED` and `BLOCKED` parent products return the parent product to `ON_MODERATION` and send a Moderation `EDITED` event.
+SKU edits ignore body `reserved_quantity`, `reservedQuantity`, `product_id`, `productId`, `seller_id`, and `sellerId` before validation, preserve persisted `reserved_quantity` and `product_id`, check ownership through the parent product, and reject SKUs whose parent product is `HARD_BLOCKED`. Edits to SKUs under `MODERATED` and `BLOCKED` parent products return the parent product to `ON_MODERATION` and send a Moderation `EDITED` event. SKU `article` can now be updated through the canonical PATCH route and legacy PUT routes.
+
+US-B2B-03 does not add SKU `images[]` update support. Image-management endpoints are separate in the authoritative flow, so this migration keeps edit behavior scoped to existing SKU fields plus `article`.
 
 Added `ProductStatus.BLOCKED` and migration `0004_add_blocked_product_status.py` using `ALTER TYPE product_status ADD VALUE IF NOT EXISTS 'BLOCKED'` inside Alembic `autocommit_block()`. Existing migrations were left unchanged.
 
@@ -106,24 +108,27 @@ Added `ProductStatus.BLOCKED` and migration `0004_add_blocked_product_status.py`
 Pytest proof commands:
 
 ```powershell
-python -m pytest tests/api/test_skus.py -vv -k "test_edit_moderated_product_returns_to_on_moderation or test_edit_blocked_product_returns_to_on_moderation or test_reserves_preserved_after_sku_edit or test_edit_hard_blocked_returns_403 or test_edit_others_product_returns_403"
+python -m pytest tests/api/test_products.py tests/api/test_skus.py -vv -k "test_patch_product_alias_returns_to_on_moderation or test_patch_sku_alias_updates_sku or test_legacy_put_product_edit_route_remains_supported or test_legacy_put_sku_edit_route_remains_supported"
 python -m pytest tests/api/test_products.py tests/api/test_skus.py -vv
 ```
 
 Required scenario results:
 
-- `test_edit_moderated_product_returns_to_on_moderation`: passed
-- `test_edit_blocked_product_returns_to_on_moderation`: passed
-- `test_reserves_preserved_after_sku_edit`: passed
-- `test_edit_hard_blocked_returns_403`: passed
-- `test_edit_others_product_returns_403`: passed
+- `test_patch_product_alias_returns_to_on_moderation`: passed
+- `test_patch_sku_alias_updates_sku`: passed
+- `test_legacy_put_product_edit_route_remains_supported`: passed
+- `test_legacy_put_sku_edit_route_remains_supported`: passed
+- `test_patch_moderated_product_returns_to_on_moderation`: passed
+- `test_patch_blocked_product_returns_to_on_moderation`: passed
+- `test_patch_hard_blocked_returns_403`: passed
+- `test_patch_others_product_returns_403`: passed
 
 Suite results:
 
-- Required US-B2B-03 scenarios: 5 passed
-- `tests/api/test_products.py tests/api/test_skus.py`: 16 passed
+- Focused US-B2B-03 route migration scenarios: 4 passed
+- `tests/api/test_products.py tests/api/test_skus.py`: 21 passed
 
-Pytest emitted the existing Windows cache warning while writing `.pytest_cache`; the test results passed.
+Pytest completed without warnings in this run.
 
 # ADR: Edited Moderation Event Idempotency
 
@@ -144,3 +149,13 @@ Options considered:
 - Service/query-level ownership check: keeps ownership validation close to the data being modified and matches the existing product/SKU service structure. Maintenance complexity stays low because write paths already go through service functions, and the risk of forgetting the check in a new endpoint is lower when ownership is enforced in the mutation service rather than only in route code.
 
 Decision: enforce product and SKU ownership at the service/query level. This is the smallest fit for this FastAPI service, and product/SKU ownership is already checked close to the data being modified.
+
+# ADR: US-B2B-03 Edit Route Migration Scope
+
+Options considered:
+
+- Replace PUT with PATCH only: matches the authoritative flow exactly, but would break clients already using the previous US-B2B-03 implementation.
+- Keep PUT as canonical: lowest code churn, but keeps the implementation out of sync with `flow/neomarket-b2b.yaml`.
+- Add PATCH as canonical and keep PUT as compatibility: aligns new clients with the authoritative flow while avoiding an unnecessary breaking change.
+
+Decision: add canonical `PATCH /api/v1/products/{product_id}` and `PATCH /api/v1/skus/{sku_id}` routes that reuse the existing edit services, while keeping the PUT routes as compatibility aliases. SKU `article` is included in update because it is an existing stored SKU field and part of the create/read contract. SKU `images[]` update remains out of scope because image-management endpoints are modeled separately.

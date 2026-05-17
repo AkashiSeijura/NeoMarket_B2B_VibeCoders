@@ -329,7 +329,7 @@ def test_first_sku_moderation_failure_rolls_back(
     assert sku_count(db_session, product.id) == 0
 
 
-def test_edit_moderated_product_returns_to_on_moderation(
+def test_patch_moderated_product_returns_to_on_moderation(
     client,
     db_session: Session,
     product_factory,
@@ -338,7 +338,7 @@ def test_edit_moderated_product_returns_to_on_moderation(
 ):
     product = product_factory(status=ProductStatus.MODERATED)
 
-    response = client.put(
+    response = client.patch(
         f"/api/v1/products/{product.id}",
         json={"title": "iPhone 15 Pro Max Updated", "seller_id": "body-seller"},
         headers=auth_headers(SELLER_ID),
@@ -360,7 +360,7 @@ def test_edit_moderated_product_returns_to_on_moderation(
     assert event["idempotency_key"]
 
 
-def test_edit_blocked_product_returns_to_on_moderation(
+def test_patch_blocked_product_returns_to_on_moderation(
     client,
     db_session: Session,
     product_factory,
@@ -369,7 +369,7 @@ def test_edit_blocked_product_returns_to_on_moderation(
 ):
     product = product_factory(status=ProductStatus.BLOCKED)
 
-    response = client.put(
+    response = client.patch(
         f"/api/v1/products/{product.id}",
         json={"description": "Updated description"},
         headers=auth_headers(SELLER_ID),
@@ -386,7 +386,7 @@ def test_edit_blocked_product_returns_to_on_moderation(
     assert moderation_requests[0]["json"]["event"] == "EDITED"
 
 
-def test_reserves_preserved_after_sku_edit(
+def test_patch_sku_alias_updates_sku(
     client,
     db_session: Session,
     product_factory,
@@ -396,10 +396,11 @@ def test_reserves_preserved_after_sku_edit(
     product = product_factory(status=ProductStatus.MODERATED)
     sku = create_existing_sku(db_session, product, reserved_quantity=7)
 
-    response = client.put(
+    response = client.patch(
         f"/api/v1/skus/{sku.id}",
         json={
             "name": "128GB Natural Titanium",
+            "article": "IPHONE15-NATURAL-128",
             "reserved_quantity": 999,
             "product_id": 999999,
             "seller_id": "body-seller",
@@ -410,20 +411,55 @@ def test_reserves_preserved_after_sku_edit(
     assert response.status_code == 200
     body = response.json()
     assert body["name"] == "128GB Natural Titanium"
-    assert body["product_id"] == product.id
+    assert body["article"] == "IPHONE15-NATURAL-128"
+    assert body["product_id"] == str(product.id)
     assert body["reserved_quantity"] == 7
 
     db_session.expire_all()
     persisted_sku = db_session.get(SKU, sku.id)
     persisted_product = db_session.get(Product, product.id)
     assert persisted_sku.product_id == product.id
+    assert persisted_sku.article == "IPHONE15-NATURAL-128"
     assert persisted_sku.reserved_quantity == 7
     assert persisted_product.status == ProductStatus.ON_MODERATION
     assert len(moderation_requests) == 1
     assert moderation_requests[0]["json"]["event"] == "EDITED"
 
 
-def test_edit_hard_blocked_returns_403(
+def test_legacy_put_sku_edit_route_remains_supported(
+    client,
+    db_session: Session,
+    product_factory,
+    auth_headers,
+    moderation_requests,
+):
+    product = product_factory(status=ProductStatus.CREATED)
+    sku = create_existing_sku(db_session, product, reserved_quantity=3)
+
+    response = client.put(
+        f"/api/v1/skus/{sku.id}",
+        json={"name": "128GB White", "article": "IPHONE15-WHITE-128"},
+        headers=auth_headers(SELLER_ID),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["name"] == "128GB White"
+    assert body["article"] == "IPHONE15-WHITE-128"
+    assert body["product_id"] == str(product.id)
+    assert body["reserved_quantity"] == 3
+
+    db_session.expire_all()
+    persisted_sku = db_session.get(SKU, sku.id)
+    persisted_product = db_session.get(Product, product.id)
+    assert persisted_sku.name == "128GB White"
+    assert persisted_sku.article == "IPHONE15-WHITE-128"
+    assert persisted_sku.reserved_quantity == 3
+    assert persisted_product.status == ProductStatus.CREATED
+    assert moderation_requests == []
+
+
+def test_patch_hard_blocked_returns_403(
     client,
     db_session: Session,
     product_factory,
@@ -433,12 +469,12 @@ def test_edit_hard_blocked_returns_403(
     product = product_factory(status=ProductStatus.HARD_BLOCKED)
     sku = create_existing_sku(db_session, product, reserved_quantity=5)
 
-    product_response = client.put(
+    product_response = client.patch(
         f"/api/v1/products/{product.id}",
         json={"title": "Forbidden title"},
         headers=auth_headers(SELLER_ID),
     )
-    sku_response = client.put(
+    sku_response = client.patch(
         f"/api/v1/skus/{sku.id}",
         json={"name": "Forbidden SKU", "reserved_quantity": 999},
         headers=auth_headers(SELLER_ID),
@@ -457,7 +493,7 @@ def test_edit_hard_blocked_returns_403(
     assert moderation_requests == []
 
 
-def test_edit_others_product_returns_403(
+def test_patch_others_product_returns_403(
     client,
     db_session: Session,
     product_factory,
@@ -468,12 +504,12 @@ def test_edit_others_product_returns_403(
     product = product_factory(seller_id=SELLER_ID, status=ProductStatus.MODERATED)
     sku = create_existing_sku(db_session, product)
 
-    product_response = client.put(
+    product_response = client.patch(
         f"/api/v1/products/{product.id}",
         json={"title": "Other seller title", "seller_id": SELLER_ID},
         headers=auth_headers(other_seller_id),
     )
-    sku_response = client.put(
+    sku_response = client.patch(
         f"/api/v1/skus/{sku.id}",
         json={"name": "Other seller SKU", "seller_id": SELLER_ID},
         headers=auth_headers(other_seller_id),
