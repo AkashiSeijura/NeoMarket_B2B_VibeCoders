@@ -1,6 +1,12 @@
 # Summary
 
-Implemented `POST /api/v1/products` for B2B product creation. The endpoint creates products with `status=CREATED`, persists `seller_id` from the Bearer JWT `seller_id` claim only, ignores any body `seller_id`, returns `skus=[]`, and keeps SKU-less products out of moderation.
+## US-B2B-01 Product Creation
+
+Migrated `POST /api/v1/products` to the authoritative `flow/neomarket-b2b.yaml` contract. The endpoint creates products with `status=CREATED`, persists `seller_id` from the Bearer JWT `seller_id` claim only, ignores any body `seller_id` or `sellerId`, returns `skus=[]`, and keeps SKU-less products out of moderation.
+
+Images are optional on create; omitted images and `images=[]` both create the product and return `images=[]`. `category_id` remains required, and nonexistent categories return endpoint-scoped `422` field details for `category_id`.
+
+Database IDs remain integers internally. The create response serializes product `id` and `category_id` as strings at the response boundary for contract compatibility, and adds response-boundary compatibility fields: `slug`, `deleted`, `blocking_reason_id`, and `moderator_comment`.
 
 # Validation
 
@@ -12,7 +18,7 @@ python -m pytest tests/api/test_products.py -q
 
 # Contract Notes
 
-`flow/b2b-flows.md` and `flow/b2b.yaml` were used as local reference inputs and are not committed. The canonical flow requires `POST /api/v1/products`, while the local OpenAPI reference currently lists `POST /api/products`; the implementation follows `/api/v1/products` because that is the assignment endpoint and the existing FastAPI router prefix.
+`flow/neomarket-b2b.yaml` is the authoritative contract for US-B2B-01 product creation.
 
 # ADR: Product Characteristics Storage
 

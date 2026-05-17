@@ -7,7 +7,10 @@ from src.services.errors import NotFoundError
 
 
 class ProductCreateValidationError(Exception):
-    pass
+    def __init__(self, field: str, message: str) -> None:
+        self.field = field
+        self.message = message
+        super().__init__(message)
 
 
 def _product_query():
@@ -37,10 +40,8 @@ def get_product_by_id(db: Session, product_id: int) -> Product:
 
 
 def create_product(db: Session, payload: ProductCreate, seller_id: str) -> Product:
-    if not payload.images:
-        raise ProductCreateValidationError("At least one image is required")
     if db.get(Category, payload.category_id) is None:
-        raise ProductCreateValidationError("Category not found")
+        raise ProductCreateValidationError("category_id", "Category not found")
 
     product = Product(
         title=payload.title,

@@ -1,6 +1,7 @@
+import re
 from datetime import datetime
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, computed_field, field_serializer
 
 from src.schemas.common import (
     APIModel,
@@ -52,4 +53,20 @@ class ProductRead(APIModel):
     skus: list[ProductSKURead] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
+
+
+class ProductCreateRead(ProductRead):
+    deleted: bool = False
+    blocking_reason_id: str | None = None
+    moderator_comment: str | None = None
+
+    @computed_field
+    @property
+    def slug(self) -> str:
+        value = re.sub(r"[^a-z0-9]+", "-", self.title.lower()).strip("-")
+        return f"{value or 'product'}-{self.id}"
+
+    @field_serializer("id", "category_id")
+    def serialize_id(self, value: int) -> str:
+        return str(value)
 
