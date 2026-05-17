@@ -76,6 +76,87 @@ def fulfilled_order_count(db_session: Session) -> int:
     return db_session.scalar(select(func.count(FulfilledOrder.order_id))) or 0
 
 
+def test_inventory_fulfill_returns_openapi_response(client, db_session: Session, category_factory):
+    product = create_product(db_session, category_factory)
+    sku = create_sku(db_session, product, active_quantity=7, reserved_quantity=5)
+
+    response = client.post(
+        "/api/v1/inventory/fulfill",
+        json=fulfill_payload("order-inventory-fulfill", sku, 2),
+        headers=service_headers(),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["order_id"] == "order-inventory-fulfill"
+    assert body["status"] == "FULFILLED"
+    assert body["processed_at"]
+    assert_sku_quantities(db_session, sku.id, active_quantity=7, reserved_quantity=3)
+    assert fulfilled_order_count(db_session) == 1
+
+
+def test_inventory_fulfill_idempotent_replay_returns_same_response_without_double_deduction(
+    client,
+    db_session: Session,
+    category_factory,
+):
+    product = create_product(db_session, category_factory)
+    sku = create_sku(db_session, product, active_quantity=8, reserved_quantity=6)
+    payload = fulfill_payload("order-inventory-idempotent", sku, 2)
+
+    first_response = client.post(
+        "/api/v1/inventory/fulfill",
+        json=payload,
+        headers=service_headers(),
+    )
+    second_response = client.post(
+        "/api/v1/inventory/fulfill",
+        json=payload,
+        headers=service_headers(),
+    )
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert second_response.json() == first_response.json()
+    assert_sku_quantities(db_session, sku.id, active_quantity=8, reserved_quantity=4)
+    assert fulfilled_order_count(db_session) == 1
+
+
+def test_inventory_fulfill_missing_service_key_returns_401(
+    client,
+    db_session: Session,
+    category_factory,
+):
+    product = create_product(db_session, category_factory)
+    sku = create_sku(db_session, product, active_quantity=5, reserved_quantity=3)
+
+    response = client.post(
+        "/api/v1/inventory/fulfill",
+        json=fulfill_payload("order-inventory-missing-service-key", sku, 1),
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {"code": "UNAUTHORIZED", "message": "Authorization required"}
+    assert_sku_quantities(db_session, sku.id, active_quantity=5, reserved_quantity=3)
+    assert fulfilled_order_count(db_session) == 0
+
+
+def test_legacy_fulfill_route_still_returns_ok(client, db_session: Session, category_factory):
+    product = create_product(db_session, category_factory)
+    sku = create_sku(db_session, product, active_quantity=7, reserved_quantity=5)
+
+    response = client.post(
+        "/api/v1/fulfill",
+        json=fulfill_payload("order-legacy-fulfill", sku, 2),
+        headers=service_headers(),
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+    assert_sku_quantities(db_session, sku.id, active_quantity=7, reserved_quantity=3)
+    assert fulfilled_order_count(db_session) == 1
+
+
 def test_fulfill_decreases_reserved_quantity(client, db_session: Session, category_factory):
     product = create_product(db_session, category_factory)
     sku = create_sku(db_session, product, active_quantity=7, reserved_quantity=5)

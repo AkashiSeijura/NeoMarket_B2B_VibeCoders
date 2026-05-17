@@ -596,9 +596,11 @@ Decision: keep the service model stable and perform OpenAPI migration at the rou
 
 # US-B2B-10 Summary
 
-Implemented `POST /api/v1/fulfill` on top of the stacked US-B2B-01 through US-B2B-09 changes. This slice depends on US-B2B-01 through US-B2B-09 until those changes are merged.
+US-B2B-10 is migrated to the final authoritative `flow/openapi.yaml` inventory fulfill contract. For the affected fulfill endpoint, this contract matches the previously reviewed `neomarket-b2b.yaml` inventory fulfill contract.
 
-Fulfill is a B2C service-to-service endpoint and authenticates only with `X-Service-Key == settings.b2c_to_b2b_key`, matching `flow/b2b-flows.md#fulfill-delivery`. Seller JWTs are not required and are not accepted as a substitute. Missing or invalid service keys return `401 {"code":"UNAUTHORIZED","message":"Authorization required"}`.
+Added canonical `POST /api/v1/inventory/fulfill` while keeping legacy `POST /api/v1/fulfill` on top of the stacked US-B2B-01 through US-B2B-09 changes. This slice depends on US-B2B-01 through US-B2B-09 until those changes are merged.
+
+Fulfill is a B2C service-to-service endpoint and authenticates only with `X-Service-Key == settings.b2c_to_b2b_key`, matching `flow/openapi.yaml`. Seller JWTs are not required and are not accepted as a substitute. Missing or invalid service keys return `401 {"code":"UNAUTHORIZED","message":"Authorization required"}`.
 
 The request shape follows the canonical flow field names:
 
@@ -611,13 +613,14 @@ The request shape follows the canonical flow field names:
 }
 ```
 
-Route-local validation requires `order_id`, a non-empty `items` list, positive integer `sku_id`, and `quantity > 0`, returning canonical `400 INVALID_REQUEST` errors instead of FastAPI `422`. The flow examples show UUID-shaped IDs, but this service currently uses integer SKU primary keys consistently with reserve/unreserve, so fulfill keeps integer `sku_id`.
+Route-local validation requires `order_id`, a non-empty `items` list, positive integer `sku_id`, and `quantity > 0`, returning canonical `400 INVALID_REQUEST` errors instead of FastAPI `422`. The OpenAPI examples show UUID-shaped IDs, but this service currently uses integer SKU primary keys consistently with reserve/unreserve, so fulfill keeps integer `sku_id`.
 
 Fulfill finalizes an existing delivered order/reservation by decreasing `reserved_quantity` only:
 
 - `reserved_quantity -= quantity`
 - `active_quantity` remains unchanged
 - `active_quantity + reserved_quantity` intentionally decreases because delivered goods have physically left stock
+- `flow/openapi.yaml` mentions `stock_quantity`; this codebase maps buyer-visible stock through `active_quantity`, and fulfill finalizes reserved stock by decreasing `reserved_quantity` only
 - no stock restore
 - no order creation/cancellation
 - no product moderation state changes
@@ -626,31 +629,33 @@ Fulfill finalizes an existing delivered order/reservation by decreasing `reserve
 
 Fulfill validates SKU existence and sufficient `reserved_quantity`; it does not require current catalog visibility. This follows the lifecycle assumption that fulfill acts on an already-created order/reservation and must still be able to complete if product visibility changed after checkout.
 
-Added `fulfilled_orders`, keyed by `order_id`, with `request_hash`, normalized `request_payload`, cached success `response`, and `created_at`. The fulfilled order record is written in the same DB transaction as the reserved stock deductions. Replaying the same `order_id` with the same normalized payload returns cached `200 {"ok": true}` without double deduction. Reusing the same `order_id` with a different payload returns `409 CONFLICT`; the flow only defines same-order retry behavior, so this conflict behavior is an explicit implementation assumption.
+Added `fulfilled_orders`, keyed by `order_id`, with `request_hash`, normalized `request_payload`, cached legacy success `response`, and `created_at`. The fulfilled order record is written in the same DB transaction as the reserved stock deductions. Replaying the same `order_id` with the same normalized payload returns without double deduction. The canonical route returns `200 {"order_id":"...","status":"FULFILLED","processed_at":"..."}` with `processed_at` derived from persisted `fulfilled_orders.created_at`, so replay returns the same timestamp. The legacy route keeps returning cached `200 {"ok": true}`. Reusing the same `order_id` with a different payload returns `409 CONFLICT`; the flow only defines same-order retry behavior, so this conflict behavior is an explicit implementation assumption.
 
 Fulfill is atomic across all requested items. The service claims the `order_id`, locks requested SKUs with `SELECT FOR UPDATE` where supported, validates every item, deducts all reserved quantities, stores the success response, and commits. If any item is missing or has insufficient reserved quantity, the transaction rolls back, no fulfilled-order success record is written, and no SKU is partially fulfilled. SQLite tests do not enforce row locks, but PostgreSQL uses the generated `SELECT FOR UPDATE`; deterministic tests cover rollback/all-or-nothing behavior.
 
-OpenAPI gap: `flow/b2b.yaml` lacks `POST /api/v1/fulfill` and has no equivalent fulfill/delivery operation or service-key security scheme, so no OpenAPI edit was made in this repository. The implementation follows `flow/b2b-flows.md#fulfill-delivery` and leaves `flow/*` unchanged.
+No US-B2B-11+ behavior is included: no seller list migration and no SKU delete behavior.
 
 # US-B2B-10 Validation
 
-Pytest proof commands:
+Pytest proof command:
 
 ```powershell
-python -m pytest tests/api/test_fulfillment.py -vv
-python -m pytest tests/api/test_fulfillment.py -k "fulfill_decreases_reserved_quantity or active_quantity_unchanged or idempotent_fulfill_no_double_deduction or missing_service_key_returns_401" -vv
 python -m pytest tests/api/test_products.py tests/api/test_skus.py tests/api/test_invoices.py tests/api/test_reservations.py tests/api/test_moderation_events.py tests/api/test_fulfillment.py -vv
 ```
 
 Required scenario results:
 
+- `test_inventory_fulfill_returns_openapi_response`: passed
+- `test_inventory_fulfill_idempotent_replay_returns_same_response_without_double_deduction`: passed
+- `test_inventory_fulfill_missing_service_key_returns_401`: passed
+- `test_legacy_fulfill_route_still_returns_ok`: passed
+
+Additional safety results:
+
 - `test_fulfill_decreases_reserved_quantity`: passed
 - `test_active_quantity_unchanged`: passed
 - `test_idempotent_fulfill_no_double_deduction`: passed
 - `test_missing_service_key_returns_401`: passed
-
-Additional safety results:
-
 - `test_same_order_id_with_different_payload_returns_409`: passed
 - `test_insufficient_reserved_quantity_rolls_back_all_items`: passed
 - `test_invalid_quantity_returns_400`: passed
@@ -658,9 +663,9 @@ Additional safety results:
 
 Suite results:
 
-- `tests/api/test_fulfillment.py`: 8 passed
-- Required US-B2B-10 scenarios: 4 passed, 4 deselected
-- `tests/api/test_products.py tests/api/test_skus.py tests/api/test_invoices.py tests/api/test_reservations.py tests/api/test_moderation_events.py tests/api/test_fulfillment.py`: 65 passed
+- `tests/api/test_fulfillment.py`: 12 passed
+- Required US-B2B-10 OpenAPI migration scenarios: 4 passed
+- `tests/api/test_products.py tests/api/test_skus.py tests/api/test_invoices.py tests/api/test_reservations.py tests/api/test_moderation_events.py tests/api/test_fulfillment.py`: 99 passed
 
 # ADR: Fulfill Idempotency by Order ID
 

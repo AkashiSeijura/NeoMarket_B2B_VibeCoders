@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from src.api.deps import unauthorized_response
 from src.core.config import settings
 from src.db.session import get_db
-from src.schemas.fulfillment import FulfillmentRead
+from src.schemas.fulfillment import FulfillmentRead, InventoryFulfillmentRead
 from src.services.fulfillment_service import (
     FulfillmentConflictError,
     FulfillmentIdempotencyConflictError,
@@ -102,6 +102,33 @@ async def fulfill_endpoint(
 
     try:
         return fulfill_skus(db, order_id, items)
+    except FulfillmentConflictError:
+        return _error(409, "CONFLICT", "Insufficient reserved quantity")
+    except FulfillmentIdempotencyConflictError as exc:
+        return _error(409, "CONFLICT", str(exc))
+
+
+@router.post(
+    "/api/v1/inventory/fulfill",
+    response_model=InventoryFulfillmentRead,
+    status_code=status.HTTP_200_OK,
+)
+async def inventory_fulfill_endpoint(
+    request: Request,
+    service_key: str | None = Header(default=None, alias="X-Service-Key"),
+    db: Session = Depends(get_db),
+) -> InventoryFulfillmentRead | JSONResponse:
+    auth_error = _validate_service_key(service_key)
+    if auth_error is not None:
+        return auth_error
+
+    payload = await _parse_fulfillment_payload(request)
+    if isinstance(payload, JSONResponse):
+        return payload
+    order_id, items = payload
+
+    try:
+        return fulfill_skus(db, order_id, items, canonical=True)
     except FulfillmentConflictError:
         return _error(409, "CONFLICT", "Insufficient reserved quantity")
     except FulfillmentIdempotencyConflictError as exc:
