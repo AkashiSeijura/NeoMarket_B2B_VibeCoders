@@ -3,7 +3,7 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, select
 from sqlalchemy.orm import Session, selectinload
 
 from src.models import Category, Product, ProductCharacteristic, ProductImage, ProductStatus, SKU
@@ -131,6 +131,7 @@ def list_seller_products(
             func.coalesce(func.sum(SKU.active_quantity), 0).label("total_active_quantity"),
             func.min(SKU.price).label("min_price"),
         )
+        .where(SKU.deleted.is_(False))
         .group_by(SKU.product_id)
         .subquery()
     )
@@ -174,7 +175,7 @@ def list_catalog_products(
     filters = [
         Product.status == ProductStatus.MODERATED,
         Product.deleted.is_(False),
-        Product.skus.any(SKU.active_quantity > 0),
+        Product.skus.any(and_(SKU.active_quantity > 0, SKU.deleted.is_(False))),
     ]
     if product_ids is not None:
         filters.append(Product.id.in_(product_ids))

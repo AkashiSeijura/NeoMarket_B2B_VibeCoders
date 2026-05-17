@@ -84,11 +84,18 @@ def sku_payload(product_id: UUID, **overrides) -> dict:
     return payload
 
 
-def sku_count(db_session: Session, product_id: int) -> int:
+def sku_count(db_session: Session, product_id: UUID) -> int:
     return db_session.scalar(select(func.count(SKU.id)).where(SKU.product_id == product_id))
 
 
-def create_existing_sku(db_session: Session, product: Product, *, reserved_quantity: int = 0) -> SKU:
+def create_existing_sku(
+    db_session: Session,
+    product: Product,
+    *,
+    active_quantity: int = 0,
+    reserved_quantity: int = 0,
+    deleted: bool = False,
+) -> SKU:
     sku = SKU(
         product_id=product.id,
         name="128GB Black",
@@ -96,8 +103,9 @@ def create_existing_sku(db_session: Session, product: Product, *, reserved_quant
         cost_price=7000000,
         discount=0,
         image="/s3/iphone15-black-128.jpg",
-        active_quantity=0,
+        active_quantity=active_quantity,
         reserved_quantity=reserved_quantity,
+        deleted=deleted,
     )
     db_session.add(sku)
     db_session.commit()
@@ -112,6 +120,10 @@ def assert_sku_image(body: dict, url: str) -> None:
     assert image["id"] != body["id"]
     assert image["url"] == url
     assert image["ordering"] == 0
+
+
+def assert_uuid(value: str) -> None:
+    UUID(value)
 
 
 def test_first_sku_transitions_product_to_on_moderation(
@@ -402,7 +414,7 @@ def test_patch_sku_alias_updates_sku(
             "name": "128GB Natural Titanium",
             "article": "IPHONE15-NATURAL-128",
             "reserved_quantity": 999,
-            "product_id": 999999,
+            "product_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
             "seller_id": "body-seller",
         },
         headers=auth_headers(SELLER_ID),
@@ -525,3 +537,280 @@ def test_patch_others_product_returns_403(
     assert persisted_product.status == ProductStatus.MODERATED
     assert persisted_sku.name == "128GB Black"
     assert moderation_requests == []
+
+
+def test_delete_sku_succeeds(
+    client,
+    db_session: Session,
+    product_factory,
+    auth_headers,
+    moderation_requests,
+):
+    product = product_factory(status=ProductStatus.CREATED)
+    sku = create_existing_sku(db_session, product, active_quantity=12, reserved_quantity=0)
+
+    response = client.delete(f"/api/v1/skus/{sku.id}", headers=auth_headers(SELLER_ID))
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+
+    db_session.expire_all()
+    persisted_sku = db_session.get(SKU, sku.id)
+    persisted_product = db_session.get(Product, product.id)
+    assert persisted_sku.deleted is True
+    assert persisted_sku.active_quantity == 12
+    assert persisted_sku.reserved_quantity == 0
+    assert persisted_product.status == ProductStatus.CREATED
+    assert moderation_requests == []
+
+
+def test_delete_sku_with_active_reserves_returns_409(
+    client,
+    db_session: Session,
+    product_factory,
+    auth_headers,
+    moderation_requests,
+):
+    product = product_factory(status=ProductStatus.MODERATED)
+    sku = create_existing_sku(db_session, product, active_quantity=3, reserved_quantity=2)
+
+    response = client.delete(f"/api/v1/skus/{sku.id}", headers=auth_headers(SELLER_ID))
+
+    assert response.status_code == 409
+    assert response.json() == {
+        "code": "CONFLICT",
+        "message": "Cannot delete SKU with active reserves",
+    }
+
+    db_session.expire_all()
+    persisted_sku = db_session.get(SKU, sku.id)
+    persisted_product = db_session.get(Product, product.id)
+    assert persisted_sku.deleted is False
+    assert persisted_sku.active_quantity == 3
+    assert persisted_sku.reserved_quantity == 2
+    assert persisted_product.status == ProductStatus.MODERATED
+    assert moderation_requests == []
+
+
+def test_last_sku_on_moderation_transitions_product_to_created(
+    client,
+    db_session: Session,
+    product_factory,
+    auth_headers,
+    moderation_requests,
+):
+    product = product_factory(status=ProductStatus.ON_MODERATION)
+    sku = create_existing_sku(db_session, product, active_quantity=0, reserved_quantity=0)
+
+    response = client.delete(f"/api/v1/skus/{sku.id}", headers=auth_headers(SELLER_ID))
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+
+    db_session.expire_all()
+    persisted_sku = db_session.get(SKU, sku.id)
+    persisted_product = db_session.get(Product, product.id)
+    assert persisted_sku.deleted is True
+    assert persisted_product.status == ProductStatus.CREATED
+
+    assert len(moderation_requests) == 1
+    request = moderation_requests[0]
+    event = request["json"]
+    assert request["url"] == f"{settings.moderation_url}/api/v1/events/product"
+    assert request["headers"]["X-Service-Key"] == settings.b2b_to_mod_key
+    assert event["product_id"] == str(product.id)
+    assert event["seller_id"] == SELLER_ID
+    assert event["event"] == "DELETED"
+    assert event["date"]
+    assert_uuid(event["idempotency_key"])
+
+
+def test_new_sku_after_last_deleted_sku_starts_moderation(
+    client,
+    db_session: Session,
+    product_factory,
+    auth_headers,
+    moderation_requests,
+):
+    product = product_factory(status=ProductStatus.ON_MODERATION)
+    sku = create_existing_sku(db_session, product, active_quantity=0, reserved_quantity=0)
+
+    delete_response = client.delete(f"/api/v1/skus/{sku.id}", headers=auth_headers(SELLER_ID))
+    create_response = client.post(
+        "/api/v1/skus",
+        json=sku_payload(product.id, name="256GB Natural Titanium"),
+        headers=auth_headers(SELLER_ID),
+    )
+
+    assert delete_response.status_code == 200
+    assert create_response.status_code == 201
+    db_session.expire_all()
+    persisted_product = db_session.get(Product, product.id)
+    assert persisted_product.status == ProductStatus.ON_MODERATION
+    assert [request["json"]["event"] for request in moderation_requests] == ["DELETED", "CREATED"]
+
+
+def test_delete_sku_hard_blocked_product_returns_403(
+    client,
+    db_session: Session,
+    product_factory,
+    auth_headers,
+    moderation_requests,
+):
+    product = product_factory(status=ProductStatus.HARD_BLOCKED)
+    sku = create_existing_sku(db_session, product, active_quantity=4, reserved_quantity=2)
+
+    response = client.delete(f"/api/v1/skus/{sku.id}", headers=auth_headers(SELLER_ID))
+
+    assert response.status_code == 403
+    assert response.json() == {
+        "code": "FORBIDDEN",
+        "message": "Cannot delete SKU of hard-blocked product",
+    }
+
+    db_session.expire_all()
+    persisted_sku = db_session.get(SKU, sku.id)
+    persisted_product = db_session.get(Product, product.id)
+    assert persisted_sku.deleted is False
+    assert persisted_sku.reserved_quantity == 2
+    assert persisted_product.status == ProductStatus.HARD_BLOCKED
+    assert moderation_requests == []
+
+
+def test_sku_out_of_stock_event_on_moderated_product(
+    client,
+    db_session: Session,
+    product_factory,
+    auth_headers,
+    moderation_requests,
+):
+    product = product_factory(status=ProductStatus.MODERATED)
+    sku = create_existing_sku(db_session, product, active_quantity=5, reserved_quantity=0)
+
+    response = client.delete(f"/api/v1/skus/{sku.id}", headers=auth_headers(SELLER_ID))
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+
+    db_session.expire_all()
+    persisted_sku = db_session.get(SKU, sku.id)
+    persisted_product = db_session.get(Product, product.id)
+    assert persisted_sku.deleted is True
+    assert persisted_sku.active_quantity == 5
+    assert persisted_product.status == ProductStatus.MODERATED
+
+    assert len(moderation_requests) == 1
+    request = moderation_requests[0]
+    event = request["json"]
+    assert request["url"] == f"{settings.b2c_url}/api/v1/events/product"
+    assert request["headers"]["X-Service-Key"] == settings.b2b_to_b2c_key
+    assert event["event"] == "SKU_OUT_OF_STOCK"
+    assert event["product_id"] == str(product.id)
+    assert event["sku_id"] == str(sku.id)
+    assert event["date"]
+    assert_uuid(event["idempotency_key"])
+
+
+def test_already_deleted_sku_returns_404_and_sends_no_events(
+    client,
+    db_session: Session,
+    product_factory,
+    auth_headers,
+    moderation_requests,
+):
+    product = product_factory(status=ProductStatus.MODERATED)
+    sku = create_existing_sku(db_session, product, active_quantity=5, deleted=True)
+
+    response = client.delete(f"/api/v1/skus/{sku.id}", headers=auth_headers(SELLER_ID))
+
+    assert response.status_code == 404
+    assert response.json() == {"code": "NOT_FOUND", "message": "SKU not found"}
+    db_session.expire_all()
+    assert db_session.get(SKU, sku.id).deleted is True
+    assert moderation_requests == []
+
+
+def test_delete_others_sku_returns_403(
+    client,
+    db_session: Session,
+    product_factory,
+    auth_headers,
+    moderation_requests,
+):
+    other_seller_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    product = product_factory(seller_id=SELLER_ID, status=ProductStatus.MODERATED)
+    sku = create_existing_sku(db_session, product, active_quantity=5)
+
+    response = client.delete(f"/api/v1/skus/{sku.id}", headers=auth_headers(other_seller_id))
+
+    assert response.status_code == 403
+    assert response.json() == {
+        "code": "NOT_OWNER",
+        "message": "Product does not belong to the authenticated seller",
+    }
+    db_session.expire_all()
+    assert db_session.get(SKU, sku.id).deleted is False
+    assert moderation_requests == []
+
+
+def test_delete_zero_stock_moderated_sku_does_not_emit_out_of_stock(
+    client,
+    db_session: Session,
+    product_factory,
+    auth_headers,
+    moderation_requests,
+):
+    product = product_factory(status=ProductStatus.MODERATED)
+    sku = create_existing_sku(db_session, product, active_quantity=0, reserved_quantity=0)
+
+    response = client.delete(f"/api/v1/skus/{sku.id}", headers=auth_headers(SELLER_ID))
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+    db_session.expire_all()
+    assert db_session.get(SKU, sku.id).deleted is True
+    assert moderation_requests == []
+
+
+def test_deleted_sku_filtered_from_catalog_reserve_and_seller_aggregates(
+    client,
+    db_session: Session,
+    product_factory,
+    auth_headers,
+    moderation_requests,
+):
+    product = product_factory(status=ProductStatus.MODERATED)
+    sku = create_existing_sku(db_session, product, active_quantity=6, reserved_quantity=0)
+
+    delete_response = client.delete(f"/api/v1/skus/{sku.id}", headers=auth_headers(SELLER_ID))
+    assert delete_response.status_code == 200
+
+    catalog_response = client.get(
+        "/api/v1/products",
+        headers={"X-Service-Key": settings.b2c_to_b2b_key},
+    )
+    reserve_response = client.post(
+        "/api/v1/reserve",
+        json={"idempotency_key": "deleted-sku-reserve", "items": [{"sku_id": str(sku.id), "quantity": 1}]},
+        headers={"X-Service-Key": settings.b2c_to_b2b_key},
+    )
+    seller_list_response = client.get("/api/v1/products", headers=auth_headers(SELLER_ID))
+
+    assert catalog_response.status_code == 200
+    assert catalog_response.json()["items"] == []
+    assert reserve_response.status_code == 409
+    assert reserve_response.json() == {
+        "reserved": False,
+        "failed_items": [
+            {
+                "sku_id": str(sku.id),
+                "requested": 1,
+                "available": 0,
+                "reason": "OUT_OF_STOCK",
+            }
+        ],
+    }
+    assert seller_list_response.status_code == 200
+    seller_item = seller_list_response.json()["items"][0]
+    assert seller_item["skus_count"] == 0
+    assert seller_item["total_active_quantity"] == 0
