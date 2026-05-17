@@ -176,7 +176,6 @@ class SKUPublicRead(APIModel):
     def stock_quantity(self) -> int:
         return self.active_quantity
 
-
 class CatalogProductSKURead(SKUPublicRead):
     pass
 
@@ -286,6 +285,44 @@ class ProductPublicRead(APIModel):
         if value is None:
             return []
         return [sku for sku in value if getattr(sku, "active_quantity", 0) > 0]
+
+
+class ProductPublicShortRead(APIModel):
+    id: uuid.UUID
+    title: str
+    status: str
+    category_id: uuid.UUID
+    images: list[ImageOut] = Field(default_factory=list, exclude=True)
+    skus: list[SKUPublicRead] = Field(default_factory=list, exclude=True)
+    created_at: datetime
+
+    @computed_field
+    @property
+    def slug(self) -> str:
+        value = re.sub(r"[^a-z0-9]+", "-", self.title.lower()).strip("-")
+        return f"{value or 'product'}-{self.id}"
+
+    @computed_field
+    @property
+    def min_price(self) -> int:
+        active_prices = [sku.price for sku in self.skus if sku.active_quantity > 0]
+        return min(active_prices)
+
+    @computed_field
+    @property
+    def cover_image(self) -> str | None:
+        return self.images[0].url if self.images else None
+
+
+class ProductPublicPaginatedResponse(APIModel):
+    items: list[ProductPublicShortRead]
+    total_count: int
+    limit: int
+    offset: int
+
+
+class PublicProductBatchRequest(APIModel):
+    product_ids: list[str] = Field(max_length=100)
 
 
 class ProductListRead(APIModel):

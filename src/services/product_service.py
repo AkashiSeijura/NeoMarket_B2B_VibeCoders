@@ -130,6 +130,26 @@ def list_catalog_products(
     return list(products), total_count
 
 
+def list_public_catalog_products(db: Session, *, limit: int = 20, offset: int = 0) -> tuple[list[Product], int]:
+    return list_catalog_products(db, limit=limit, offset=offset)
+
+
+def list_public_products_by_ids(db: Session, product_ids: Sequence[uuid.UUID]) -> list[Product]:
+    if not product_ids:
+        return []
+
+    products, _ = list_catalog_products(db, product_ids=product_ids)
+    product_by_id = {product.id: product for product in products}
+    ordered_products: list[Product] = []
+    seen_ids: set[uuid.UUID] = set()
+    for product_id in product_ids:
+        product = product_by_id.get(product_id)
+        if product is not None and product_id not in seen_ids:
+            ordered_products.append(product)
+            seen_ids.add(product_id)
+    return ordered_products
+
+
 def create_product(db: Session, payload: ProductCreate, seller_id: uuid.UUID) -> Product:
     if not payload.images:
         raise ProductCreateValidationError("images", "At least one image is required")

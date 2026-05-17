@@ -44,7 +44,7 @@ The SKU endpoint authenticates the seller from JWT claims, verifies that the par
 
 После принятого UUID root fix ответ создания SKU использует UUID-backed `id` и `product_id` без stringification integer ID на границе ответа. Ответ также возвращает `article`, `images[]`, `stock_quantity`, `created_at` и `updated_at`, где текущая storage model поддерживает эти поля безопасно. Для первого SKU у продукта в статусе `CREATED` продукт переходит в `ON_MODERATION` и отправляет ровно одно событие Moderation `CREATED`. Дополнительные SKU у продуктов, которые уже находятся на модерации, не отправляют события и не меняют статус.
 
-External arbiter response-contract fix: the shared `ImageOut` and `CharacteristicOut` schemas include `id`. SKU characteristics return their persisted row ids. SKU images use a response-boundary synthetic id shaped as `sku-image:{sku.id}:0` because this codebase stores only one `skus.image` URL and has no SKU image table. No DB migration for SKU images is introduced.
+External arbiter response-contract fix: the shared `ImageOut` and `CharacteristicOut` schemas include `id`. SKU characteristics return their persisted row ids. SKU images use a deterministic response-boundary UUID generated from the seed `sku-image:{sku.id}:0` because this codebase stores only one `skus.image` URL and has no SKU image table. No DB migration for SKU images is introduced.
 
 The Moderation event is sent to `{moderation_url}/api/v1/events/product` with `X-Service-Key`. The payload includes `idempotency_key`, `product_id`, `seller_id`, `event`, and `date`. The canonical flow requires an `idempotency_key`, but does not define deterministic generation or a UUID namespace; this implementation uses a stable UUIDv5 derived from `product-created:<product_id>` with `uuid.NAMESPACE_URL`, and documents that as a local assumption.
 
@@ -237,7 +237,7 @@ When a valid `X-Service-Key` is present, the endpoint uses public B2C mode and d
 
 Seller and public detail responses preserve the accepted UUID-backed contract from US-B2B-01 and US-B2B-02: product, category, image, characteristic, and nested SKU ids are UUID values, nested SKU images are returned as `images[]`, and no integer-id response serialization is reintroduced. Public detail uses separate response schemas to omit seller-only fields, includes only in-stock public SKUs, maps public `stock_quantity` to `active_quantity`, and keeps `active_quantity` because the schema requires it.
 
-External arbiter contract fix: seller detail now includes ProductResponse-required top-level fields `slug`, `blocking_reason_id`, and `moderator_comment` while keeping the enriched `blocking_reason` and `field_reports` details for blocked products. Seller detail nested SKUs now include SKUResponse-required fields `product_id`, `stock_quantity`, `article`, `images`, `created_at`, and `updated_at` alongside seller-only `cost_price` and `reserved_quantity`. Seller SKU images are returned as `images[]` with stable synthetic response-only ids shaped as `sku-image:{sku.id}:0` because this codebase stores only one `skus.image` URL and has no SKU image table. The shared `ImageOut` and `CharacteristicOut` `id` fix is preserved, and the public view remains seller-data-safe by hiding `cost_price`, `reserved_quantity`, `blocking_reason`, and `field_reports`.
+External arbiter contract fix: seller detail now includes ProductResponse-required top-level fields `slug`, `blocking_reason_id`, and `moderator_comment` while keeping the enriched `blocking_reason` and `field_reports` details for blocked products. Seller detail nested SKUs now include SKUResponse-required fields `product_id`, `stock_quantity`, `article`, `images`, `created_at`, and `updated_at` alongside seller-only `cost_price` and `reserved_quantity`. Seller SKU images are returned as `images[]` with stable synthetic response-only UUID ids generated from the seed `sku-image:{sku.id}:0` because this codebase stores only one `skus.image` URL and has no SKU image table. The shared `ImageOut` and `CharacteristicOut` `id` fix is preserved, and the public view remains seller-data-safe by hiding `cost_price`, `reserved_quantity`, `blocking_reason`, and `field_reports`.
 
 # US-B2B-05 Validation
 
@@ -338,44 +338,66 @@ Decision: validate SKU ownership and product eligibility in the service/model la
 
 # US-B2B-07 Summary
 
-Implemented B2C catalog mode for `GET /api/v1/public/products` on top of US-B2B-01 through US-B2B-06. This remains a stacked change until those earlier slices are merged.
+US-B2B-07 is migrated to the final authoritative `flow/openapi.yaml` public catalog contract. For the affected public catalog list and batch endpoints, this contract matches the previously reviewed `neomarket-b2b.yaml` public catalog contract.
 
-The public catalog endpoint requires `X-Service-Key`. A valid key matching `settings.b2c_to_b2b_key` uses catalog mode without JWT. An invalid or missing service key returns `401 {"code":"UNAUTHORIZED","message":"Authorization required"}`. The existing seller-list endpoint remains `GET /api/v1/products` and still requires the seller Bearer JWT. Seller JWTs are not accepted as a substitute for the B2C service key.
+Migrated the B2C public catalog surface to the authoritative `flow/openapi.yaml` paths for this slice:
 
-Catalog mode returns only products with `status=MODERATED`, `deleted=false`, and at least one SKU with `active_quantity > 0`. Hidden, deleted, nonexistent, non-moderated, no-SKU, and out-of-stock products are silently omitted from both full catalog and batch responses. IDs remain UUID-backed. Batch lookup uses `POST /api/v1/public/products/batch` with `product_ids`; invalid ID tokens return `400 INVALID_REQUEST`.
+- `GET /api/v1/public/products`
+- `POST /api/v1/public/products/batch`
 
-Catalog serialization uses dedicated allowlisted schemas. Product output includes only `id`, `title`, `description`, `status`, `category`, `images`, `characteristics`, and `skus`. SKU output includes only public SKU fields and UUID-backed `images[]`. It does not expose seller-only or moderation-only fields such as `cost_price`, `reserved_quantity`, `seller_id`, `deleted`, `blocking_reason`, or `field_reports`.
+The legacy service-key catalog entrypoint `GET /api/v1/products` remains available for compatibility, while seller `GET /api/v1/products`, seller/public `GET /api/v1/products/{product_id}`, product create/edit/delete, SKU, and invoice behavior are preserved.
 
-Implementation follows final `flow/openapi.yaml` public catalog paths and keeps the reviewed US-B2B-07 behavior aligned with the UUID contract from US-B2B-01 through US-B2B-06.
+Public catalog routes require `X-Service-Key == settings.b2c_to_b2b_key`; missing or invalid service keys return `401 {"code":"UNAUTHORIZED","message":"Authorization required"}`.
 
-Assumption: catalog responses include only in-stock SKUs to reduce exposure of unavailable variants.
+Public list and batch visibility is restricted to products with `status=MODERATED`, `deleted=false`, and at least one SKU where `active_quantity > 0`. Public SKU arrays include only in-stock SKUs. Missing, hidden, deleted, non-moderated, nonexistent, and out-of-stock products are omitted from batch responses instead of failing the whole batch.
+
+Public list responses use canonical short products with `id`, `title`, `slug`, `status`, `category_id`, `min_price`, `cover_image`, and `created_at`. Public batch responses use the full public product schema. Public responses do not expose seller-only or moderation/deletion fields such as `cost_price`, `reserved_quantity`, `deleted`, `blocking_reason`, `field_reports`, `moderator_comment`, or `blocking_reason_id`. Public SKU `stock_quantity` equals `active_quantity`.
+
+Temporary compatibility note: the current database stores one SKU image URL directly on `skus.image` and has no SKU image table. Public SKU image responses therefore synthesize stable UUID response-boundary IDs using the seed `sku-image:{sku_id}:0` when a SKU image URL exists. The raw SKU ID is not reused as `images[].id`.
+
+Unsupported OpenAPI surface in this branch: `GET /api/v1/public/products` implements only `limit` and `offset`. `category_id`, `search`, price filters, seller filters, dynamic `filters`, and advanced `sort` are documented by `flow/openapi.yaml` but intentionally deferred outside US-B2B-07.
 
 # US-B2B-07 Validation
 
 Pytest proof commands:
 
 ```powershell
-python -m pytest tests/api/test_products.py -vv -k "test_catalog_returns_moderated_in_stock_products or test_catalog_excludes_hard_blocked or test_catalog_missing_service_key_returns_401 or test_catalog_response_has_no_cost_price or test_batch_ids_returns_visible_subset"
+python -m pytest tests/api/test_products.py -vv
 python -m pytest tests/api/test_products.py tests/api/test_skus.py tests/api/test_invoices.py -vv
 ```
 
 Required scenario results:
 
-- `test_catalog_returns_moderated_in_stock_products`: passed
-- `test_catalog_excludes_hard_blocked`: passed
-- `test_catalog_missing_service_key_returns_401`: passed
-- `test_catalog_response_has_no_cost_price`: passed
-- `test_batch_ids_returns_visible_subset`: passed
+- `test_public_catalog_returns_short_paginated_products`: passed
+- `test_public_catalog_excludes_non_moderated_deleted_and_out_of_stock`: passed
+- `test_public_catalog_requires_valid_service_key`: passed
+- `test_public_catalog_response_has_no_seller_only_fields`: passed
+- `test_public_batch_returns_visible_full_public_products`: passed
+- `test_public_batch_omits_missing_hidden_deleted_and_out_of_stock_products`: passed
+- `test_public_batch_requires_valid_service_key`: passed
+- `test_legacy_products_service_key_catalog_route_remains_supported`: passed
 
 Suite results:
 
-- Required US-B2B-07 scenarios: 5 passed
-- `tests/api/test_products.py tests/api/test_skus.py tests/api/test_invoices.py`: 37 passed
+- `tests/api/test_products.py`: 31 passed
+- `tests/api/test_products.py tests/api/test_skus.py tests/api/test_invoices.py`: 53 passed
 
-# ADR: B2C Catalog Mode Routing
+# ADR: Public Catalog Routing And Compatibility
 
 Options considered:
 
-- Public URL per final OpenAPI: selected. It keeps catalog routing at `/api/v1/public/products`, leaves seller-list behavior on `/api/v1/products`, and keeps field-leak risk controlled by dedicated catalog schemas and service logic.
-- One URL with branching by header: rejected for the rebased branch because final `flow/openapi.yaml` defines separate public catalog paths.
-- Two duplicate view functions on the same path: rejected because duplicate method/path registration in FastAPI is route-order dependent and increases maintenance risk.
+- Keep only the legacy `GET /api/v1/products` service-key mode: lowest route churn, but it leaves US-B2B-07 off the authoritative `flow/openapi.yaml` public catalog paths.
+- Move all B2C catalog traffic to `/api/v1/public/products` and remove legacy behavior: cleanest contract, but breaks existing stacked behavior and callers using the service-key route.
+- Add canonical public routes and keep the legacy service-key route as a compatibility alias: selected. This aligns new B2C catalog calls with `flow/openapi.yaml`, preserves existing seller/product behavior, and keeps field-leak risk controlled through dedicated public schemas and shared service visibility helpers.
+
+Decision: canonical list and batch live under `/api/v1/public/products`. The legacy `GET /api/v1/products` service-key branch remains as a small compatibility route returning the same short public list shape. Batch lookup is canonicalized to `POST /api/v1/public/products/batch`; old `?ids=` test coverage was removed.
+
+# ADR: Deferred Public Catalog Filters
+
+Options considered:
+
+- Implement every filter declared in `flow/openapi.yaml`: aligns the broad schema immediately, but expands this migration into search, price filtering, seller filtering, dynamic characteristic filtering, and sort behavior that are not part of the US-B2B-07 slice.
+- Reject unsupported query parameters explicitly: clearer to clients, but risks breaking forward-compatible callers that may already send no-op parameters through a gateway.
+- Implement only pagination and document the unsupported surface: selected for this branch. It keeps behavior narrow and testable while making the contract gap explicit.
+
+Decision: only `limit` and `offset` are active for `GET /api/v1/public/products` in this slice. `category_id`, `search`, `min_price`, `max_price`, `seller_id`, dynamic `filters`, and advanced `sort` remain deferred.

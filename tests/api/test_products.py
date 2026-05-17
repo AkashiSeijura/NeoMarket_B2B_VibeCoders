@@ -887,75 +887,60 @@ def test_deleted_product_not_in_seller_list(
     assert deleted_product.deleted is True
 
 
-def test_catalog_returns_moderated_in_stock_products(client, db_session: Session, test_product_factory):
+def test_public_catalog_returns_short_paginated_products(client, db_session: Session, test_product_factory):
     visible_product = test_product_factory(status=ProductStatus.MODERATED)
     visible_sku = create_existing_sku(db_session, visible_product, active_quantity=5)
+    visible_sku.price = 1234500
     create_existing_sku(db_session, visible_product, active_quantity=0)
+    db_session.commit()
 
-    response = client.get("/api/v1/public/products", headers=catalog_headers())
+    response = client.get("/api/v1/public/products", headers=public_headers(), params={"limit": 10, "offset": 0})
 
     assert response.status_code == 200
     body = response.json()
     assert body["total_count"] == 1
-    assert [item["id"] for item in body["items"]] == [str(visible_product.id)]
-    product = body["items"][0]
-    assert product["status"] == "MODERATED"
-    assert product["category"] == {"id": str(visible_product.category.id), "name": visible_product.category.name}
-    assert product["images"] == [
-        {"id": str(visible_product.images[0].id), "url": "/s3/iphone15-front.jpg", "ordering": 0}
-    ]
-    assert product["characteristics"] == [
-        {"id": str(visible_product.characteristics[0].id), "name": "Brand", "value": "Apple"}
-    ]
-    response_sku = product["skus"][0]
-    assert product["skus"] == [
+    assert body["limit"] == 10
+    assert body["offset"] == 0
+    assert body["items"] == [
         {
-            "id": str(visible_sku.id),
-            "product_id": str(visible_product.id),
-            "name": "128GB Black",
-            "price": 9999000,
-            "discount": 0,
-            "active_quantity": 5,
-            "article": "IPHONE15-BLACK-128",
-            "images": [
-                {
-                    "id": response_sku["images"][0]["id"],
-                    "url": "/s3/iphone15-black-128.jpg",
-                    "ordering": 0,
-                }
-            ],
-            "characteristics": [
-                {"id": str(visible_sku.characteristics[0].id), "name": "Storage", "value": "128GB"}
-            ],
-            "stock_quantity": 5,
+            "id": str(visible_product.id),
+            "title": visible_product.title,
+            "status": "MODERATED",
+            "category_id": str(visible_product.category_id),
+            "created_at": body["items"][0]["created_at"],
+            "slug": f"iphone-15-pro-max-{visible_product.id}",
+            "min_price": 1234500,
+            "cover_image": "/s3/iphone15-front.jpg",
         }
     ]
-    assert_uuid(response_sku["images"][0]["id"])
 
 
-def test_catalog_excludes_hard_blocked(client, db_session: Session, test_product_factory):
+def test_public_catalog_excludes_non_moderated_deleted_and_out_of_stock(
+    client,
+    db_session: Session,
+    test_product_factory,
+):
     visible_product = test_product_factory(status=ProductStatus.MODERATED)
     create_existing_sku(db_session, visible_product, active_quantity=3)
 
-    hidden_statuses = [
+    for product_status in [
         ProductStatus.CREATED,
         ProductStatus.DRAFT,
         ProductStatus.ON_MODERATION,
         ProductStatus.BLOCKED,
         ProductStatus.REJECTED,
         ProductStatus.HARD_BLOCKED,
-    ]
-    for status in hidden_statuses:
-        product = test_product_factory(status=status)
+    ]:
+        product = test_product_factory(status=product_status)
         create_existing_sku(db_session, product, active_quantity=3)
 
     deleted_product = test_product_factory(status=ProductStatus.MODERATED, deleted=True)
     create_existing_sku(db_session, deleted_product, active_quantity=3)
     no_sku_product = test_product_factory(status=ProductStatus.MODERATED)
     out_of_stock_product = test_product_factory(status=ProductStatus.MODERATED)
-    create_existing_sku(db_session, out_of_stock_product, active_quantity=0)
+    create_existing_sku(db_session, out_of_stock_product, active_quantity=0, reserved_quantity=4)
 
-    response = client.get("/api/v1/public/products", headers=catalog_headers())
+    response = client.get("/api/v1/public/products", headers=public_headers())
 
     assert response.status_code == 200
     body = response.json()
@@ -966,7 +951,7 @@ def test_catalog_excludes_hard_blocked(client, db_session: Session, test_product
     assert hidden_ids.isdisjoint({item["id"] for item in body["items"]})
 
 
-def test_catalog_missing_service_key_returns_401(client, db_session: Session, test_product_factory, auth_headers):
+def test_public_catalog_requires_valid_service_key(client, db_session: Session, test_product_factory):
     product = test_product_factory(status=ProductStatus.MODERATED)
     create_existing_sku(db_session, product, active_quantity=1)
 
@@ -978,14 +963,8 @@ def test_catalog_missing_service_key_returns_401(client, db_session: Session, te
     assert invalid_response.status_code == 401
     assert invalid_response.json() == {"code": "UNAUTHORIZED", "message": "Authorization required"}
 
-    seller_response = client.get("/api/v1/products", headers=auth_headers(SELLER_ID))
-    assert seller_response.status_code == 200
-    seller_body = seller_response.json()
-    assert seller_body["total_count"] == 1
-    assert seller_body["items"][0]["seller_id"] == SELLER_ID
 
-
-def test_catalog_response_has_no_cost_price(client, db_session: Session, test_product_factory):
+def test_public_catalog_response_has_no_seller_only_fields(client, db_session: Session, test_product_factory):
     product = test_product_factory(
         status=ProductStatus.MODERATED,
         blocking_reason={"title": "hidden"},
@@ -993,7 +972,7 @@ def test_catalog_response_has_no_cost_price(client, db_session: Session, test_pr
     )
     create_existing_sku(db_session, product, active_quantity=4, reserved_quantity=2)
 
-    response = client.get("/api/v1/public/products", headers=catalog_headers())
+    response = client.get("/api/v1/public/products", headers=public_headers())
 
     assert response.status_code == 200
     body = response.json()
@@ -1005,18 +984,76 @@ def test_catalog_response_has_no_cost_price(client, db_session: Session, test_pr
         "deleted",
         "blocking_reason",
         "field_reports",
+        "moderator_comment",
+        "blocking_reason_id",
     ]:
         assert sensitive_key not in serialized
         assert_key_absent(body, sensitive_key)
 
 
-def test_batch_ids_returns_visible_subset(client, db_session: Session, test_product_factory):
+def test_public_batch_returns_visible_full_public_products(client, db_session: Session, test_product_factory):
+    product = test_product_factory(status=ProductStatus.MODERATED)
+    active_sku = create_existing_sku(
+        db_session,
+        product,
+        active_quantity=6,
+        reserved_quantity=2,
+        article="IPHONE15-BLACK-128",
+    )
+    create_existing_sku(db_session, product, active_quantity=0, reserved_quantity=5, image="")
+
+    response = client.post(
+        "/api/v1/public/products/batch",
+        json={"product_ids": [str(product.id)]},
+        headers=public_headers(),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 1
+    public_product = body[0]
+    assert public_product["id"] == str(product.id)
+    assert public_product["seller_id"] == SELLER_ID
+    assert public_product["category_id"] == str(product.category_id)
+    assert public_product["title"] == product.title
+    assert public_product["slug"] == f"iphone-15-pro-max-{product.id}"
+    assert public_product["status"] == "MODERATED"
+    assert len(public_product["skus"]) == 1
+    sku = public_product["skus"][0]
+    assert sku["id"] == str(active_sku.id)
+    assert sku["product_id"] == str(product.id)
+    assert sku["active_quantity"] == 6
+    assert sku["stock_quantity"] == 6
+    assert sku["images"] == [
+        {"id": sku["images"][0]["id"], "url": "/s3/iphone15-black-128.jpg", "ordering": 0}
+    ]
+    assert_uuid(sku["images"][0]["id"])
+    assert sku["images"][0]["id"] != str(active_sku.id)
+    for sensitive_key in [
+        "cost_price",
+        "reserved_quantity",
+        "deleted",
+        "blocking_reason",
+        "field_reports",
+        "moderator_comment",
+        "blocking_reason_id",
+    ]:
+        assert_key_absent(public_product, sensitive_key)
+
+
+def test_public_batch_omits_missing_hidden_deleted_and_out_of_stock_products(
+    client,
+    db_session: Session,
+    test_product_factory,
+):
     visible_product = test_product_factory(status=ProductStatus.MODERATED)
     create_existing_sku(db_session, visible_product, active_quantity=7)
     hidden_product = test_product_factory(status=ProductStatus.HARD_BLOCKED)
     create_existing_sku(db_session, hidden_product, active_quantity=7)
     deleted_product = test_product_factory(status=ProductStatus.MODERATED, deleted=True)
     create_existing_sku(db_session, deleted_product, active_quantity=7)
+    out_of_stock_product = test_product_factory(status=ProductStatus.MODERATED)
+    create_existing_sku(db_session, out_of_stock_product, active_quantity=0, reserved_quantity=3)
 
     response = client.post(
         "/api/v1/public/products/batch",
@@ -1026,30 +1063,46 @@ def test_batch_ids_returns_visible_subset(client, db_session: Session, test_prod
                 str(hidden_product.id),
                 str(deleted_product.id),
                 str(uuid4()),
+                str(out_of_stock_product.id),
+                str(uuid4()),
             ]
         },
-        headers=catalog_headers(),
+        headers=public_headers(),
     )
 
     assert response.status_code == 200
-    body = response.json()
-    assert [item["id"] for item in body] == [str(visible_product.id)]
+    assert [item["id"] for item in response.json()] == [str(visible_product.id)]
 
-    repeated_response = client.get(
-        "/api/v1/public/products",
-        params=[("ids", str(visible_product.id)), ("ids", str(hidden_product.id)), ("ids", str(uuid4()))],
-        headers=catalog_headers(),
-    )
-    assert repeated_response.status_code == 200
-    assert [item["id"] for item in repeated_response.json()["items"]] == [str(visible_product.id)]
+
+def test_public_batch_requires_valid_service_key(client, db_session: Session, test_product_factory):
+    product = test_product_factory(status=ProductStatus.MODERATED)
+    create_existing_sku(db_session, product, active_quantity=1)
+
+    missing_response = client.post("/api/v1/public/products/batch", json={"product_ids": [str(product.id)]})
+    assert missing_response.status_code == 401
+    assert missing_response.json() == {"code": "UNAUTHORIZED", "message": "Authorization required"}
 
     invalid_response = client.post(
         "/api/v1/public/products/batch",
-        json={"product_ids": [str(visible_product.id), "not-an-id"]},
-        headers=catalog_headers(),
+        json={"product_ids": [str(product.id)]},
+        headers={"X-Service-Key": "wrong"},
     )
-    assert invalid_response.status_code == 400
-    assert invalid_response.json() == {
-        "code": "INVALID_REQUEST",
-        "message": "ids must be a comma-separated list of product ids",
-    }
+    assert invalid_response.status_code == 401
+    assert invalid_response.json() == {"code": "UNAUTHORIZED", "message": "Authorization required"}
+
+
+def test_legacy_products_service_key_catalog_route_remains_supported(
+    client,
+    db_session: Session,
+    test_product_factory,
+):
+    product = test_product_factory(status=ProductStatus.MODERATED)
+    create_existing_sku(db_session, product, active_quantity=2)
+
+    response = client.get("/api/v1/products", headers=catalog_headers())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total_count"] == 1
+    assert [item["id"] for item in body["items"]] == [str(product.id)]
+    assert "min_price" in body["items"][0]
