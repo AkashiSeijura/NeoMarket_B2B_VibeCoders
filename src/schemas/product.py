@@ -325,8 +325,27 @@ class PublicProductBatchRequest(APIModel):
     product_ids: list[str] = Field(max_length=100)
 
 
+class SellerProductListItemRead(APIModel):
+    id: uuid.UUID
+    title: str
+    status: str
+    deleted: bool
+    category: CategoryOut
+    images: list[ImageOut] = Field(default_factory=list)
+    skus_count: int
+    total_active_quantity: int
+    created_at: datetime
+
+
 class ProductListRead(APIModel):
     items: list[ProductRead]
+    total_count: int
+    limit: int
+    offset: int
+
+
+class SellerProductListRead(APIModel):
+    items: list[SellerProductListItemRead]
     total_count: int
     limit: int
     offset: int

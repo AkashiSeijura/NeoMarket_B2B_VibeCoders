@@ -114,12 +114,13 @@ def product_factory(db_session: Session, category_factory):
         seller_id: str = SELLER_ID,
         status: ProductStatus = ProductStatus.CREATED,
         deleted: bool = False,
+        title: str = "iPhone 15 Pro Max",
         blocking_reason: dict | None = None,
         field_reports: list[dict] | None = None,
     ) -> Product:
         category = category_factory()
         product = Product(
-            title="iPhone 15 Pro Max",
+            title=title,
             description="Flagship smartphone",
             seller_id=seller_id,
             category_id=category.id,
@@ -858,7 +859,77 @@ def test_delete_others_product_returns_403(
     assert test_event_requests == {"moderation": [], "b2c": []}
 
 
-def test_deleted_product_not_in_seller_list(
+def test_list_returns_only_own_products(
+    client,
+    db_session: Session,
+    test_product_factory,
+    auth_headers,
+):
+    own_product = test_product_factory()
+    create_existing_sku(db_session, own_product, active_quantity=5)
+    create_existing_sku(db_session, own_product, active_quantity=0)
+    own_product_without_skus = test_product_factory()
+    other_product = test_product_factory(seller_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+
+    response = client.get("/api/v1/products", headers=auth_headers(SELLER_ID))
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total_count"] == 2
+    assert body["limit"] == 20
+    assert body["offset"] == 0
+    assert [item["id"] for item in body["items"]] == [str(own_product.id), str(own_product_without_skus.id)]
+    assert str(other_product.id) not in [item["id"] for item in body["items"]]
+
+    first_item = body["items"][0]
+    assert first_item["title"] == own_product.title
+    assert first_item["status"] == "CREATED"
+    assert first_item["deleted"] is False
+    assert first_item["category"] == {"id": str(own_product.category.id), "name": own_product.category.name}
+    assert first_item["images"] == [
+        {
+            "id": str(own_product.images[0].id),
+            "url": "/s3/iphone15-front.jpg",
+            "ordering": 0,
+        }
+    ]
+    assert first_item["skus_count"] == 2
+    assert first_item["total_active_quantity"] == 5
+    assert "created_at" in first_item
+
+    second_item = body["items"][1]
+    assert second_item["skus_count"] == 0
+    assert second_item["total_active_quantity"] == 0
+
+
+def test_idor_query_param_seller_id_ignored(
+    client,
+    test_product_factory,
+    auth_headers,
+):
+    other_seller_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+    own_product = test_product_factory()
+    other_product = test_product_factory(seller_id=other_seller_id)
+
+    response = client.get(
+        "/api/v1/products",
+        params={
+            "seller_id": other_seller_id,
+            "sellerId": other_seller_id,
+            "owner_id": other_seller_id,
+            "user_id": other_seller_id,
+        },
+        headers=auth_headers(SELLER_ID),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total_count"] == 1
+    assert [item["id"] for item in body["items"]] == [str(own_product.id)]
+    assert str(other_product.id) not in [item["id"] for item in body["items"]]
+
+
+def test_deleted_products_visible_with_deleted_flag(
     client,
     db_session: Session,
     test_product_factory,
@@ -880,11 +951,71 @@ def test_deleted_product_not_in_seller_list(
 
     assert list_response.status_code == 200
     body = list_response.json()
-    assert body["total_count"] == 1
-    assert [item["id"] for item in body["items"]] == [str(visible_product.id)]
+    assert body["total_count"] == 2
+    assert [item["id"] for item in body["items"]] == [str(visible_product.id), str(deleted_product.id)]
+    assert [item["deleted"] for item in body["items"]] == [False, True]
 
     db_session.refresh(deleted_product)
     assert deleted_product.deleted is True
+
+
+def test_status_filter_works_correctly(client, test_product_factory, auth_headers):
+    blocked_product = test_product_factory(status=ProductStatus.BLOCKED)
+    moderated_product = test_product_factory(status=ProductStatus.MODERATED)
+    other_blocked_product = test_product_factory(
+        seller_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        status=ProductStatus.BLOCKED,
+    )
+
+    response = client.get(
+        "/api/v1/products",
+        params={"status": "BLOCKED"},
+        headers=auth_headers(SELLER_ID),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total_count"] == 1
+    assert [item["id"] for item in body["items"]] == [str(blocked_product.id)]
+    assert str(moderated_product.id) not in [item["id"] for item in body["items"]]
+    assert str(other_blocked_product.id) not in [item["id"] for item in body["items"]]
+
+    invalid_response = client.get(
+        "/api/v1/products",
+        params={"status": "NOT_A_STATUS"},
+        headers=auth_headers(SELLER_ID),
+    )
+    assert invalid_response.status_code == 400
+    assert invalid_response.json() == {
+        "code": "INVALID_REQUEST",
+        "message": "status must be valid",
+    }
+
+
+def test_search_by_title_case_insensitive(client, test_product_factory, auth_headers):
+    matching_product = test_product_factory(title="Wireless Keyboard")
+    another_matching_product = test_product_factory(title="compact KEYBOARD case")
+    non_matching_product = test_product_factory(title="Bluetooth Mouse")
+    other_seller_product = test_product_factory(
+        seller_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        title="Keyboard for another seller",
+    )
+
+    response = client.get(
+        "/api/v1/products",
+        params={"search": "  keyboard  "},
+        headers=auth_headers(SELLER_ID),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total_count"] == 2
+    assert [item["id"] for item in body["items"]] == [
+        str(matching_product.id),
+        str(another_matching_product.id),
+    ]
+    assert str(non_matching_product.id) not in [item["id"] for item in body["items"]]
+    assert str(other_seller_product.id) not in [item["id"] for item in body["items"]]
 
 
 def test_public_catalog_returns_short_paginated_products(client, db_session: Session, test_product_factory):
@@ -951,7 +1082,7 @@ def test_public_catalog_excludes_non_moderated_deleted_and_out_of_stock(
     assert hidden_ids.isdisjoint({item["id"] for item in body["items"]})
 
 
-def test_public_catalog_requires_valid_service_key(client, db_session: Session, test_product_factory):
+def test_public_catalog_requires_valid_service_key(client, db_session: Session, test_product_factory, auth_headers):
     product = test_product_factory(status=ProductStatus.MODERATED)
     create_existing_sku(db_session, product, active_quantity=1)
 
@@ -962,6 +1093,13 @@ def test_public_catalog_requires_valid_service_key(client, db_session: Session, 
     invalid_response = client.get("/api/v1/public/products", headers={"X-Service-Key": "wrong"})
     assert invalid_response.status_code == 401
     assert invalid_response.json() == {"code": "UNAUTHORIZED", "message": "Authorization required"}
+
+    seller_response = client.get("/api/v1/products", headers=auth_headers(SELLER_ID))
+    assert seller_response.status_code == 200
+    seller_body = seller_response.json()
+    assert seller_body["total_count"] == 1
+    assert seller_body["items"][0]["id"] == str(product.id)
+    assert "seller_id" not in seller_body["items"][0]
 
 
 def test_public_catalog_response_has_no_seller_only_fields(client, db_session: Session, test_product_factory):

@@ -14,15 +14,17 @@ from src.api.deps import (
 )
 from src.core.config import settings
 from src.db.session import get_db
+from src.models import ProductStatus
 from src.schemas.product import (
     ProductCreate,
     ProductCreateRead,
-    ProductListRead,
     ProductPublicPaginatedResponse,
     ProductPublicRead,
     ProductResponse,
     ProductPublicShortRead,
     ProductUpdate,
+    SellerProductListItemRead,
+    SellerProductListRead,
     SellerProductRead,
 )
 from src.services.errors import NotFoundError
@@ -92,15 +94,34 @@ async def create_product_endpoint(
         return _field_validation_error(exc.field, exc.message)
 
 
-@router.get("", response_model=ProductListRead | ProductPublicPaginatedResponse, status_code=status.HTTP_200_OK)
+def _seller_product_list_item(item) -> SellerProductListItemRead:
+    product = item.product
+    return SellerProductListItemRead.model_validate(
+        {
+            "id": product.id,
+            "title": product.title,
+            "status": product.status,
+            "deleted": product.deleted,
+            "category": product.category,
+            "images": product.images,
+            "skus_count": item.skus_count,
+            "total_active_quantity": item.total_active_quantity,
+            "created_at": product.created_at,
+        }
+    )
+
+
+@router.get("", response_model=SellerProductListRead | ProductPublicPaginatedResponse, status_code=status.HTTP_200_OK)
 def list_products_endpoint(
     limit: int = 20,
     offset: int = 0,
     ids: list[str] | None = Query(default=None),
+    product_status: str | None = Query(default=None, alias="status"),
+    search: str | None = Query(default=None),
     service_key: str | None = Header(default=None, alias="X-Service-Key"),
     token: str | None = Depends(oauth2_scheme),
     db: Session = Depends(get_db),
-) -> ProductListRead | ProductPublicPaginatedResponse | JSONResponse:
+) -> SellerProductListRead | ProductPublicPaginatedResponse | JSONResponse:
     bounded_limit = min(max(limit, 1), 100)
     bounded_offset = max(offset, 0)
 
@@ -133,14 +154,23 @@ def list_products_endpoint(
     if isinstance(current_seller, JSONResponse):
         return current_seller
 
+    status_filter = None
+    if product_status is not None:
+        try:
+            status_filter = ProductStatus(product_status)
+        except ValueError:
+            return _invalid_request("status must be valid")
+
     products, total_count = list_seller_products(
         db,
         current_seller.seller_id,
         limit=bounded_limit,
         offset=bounded_offset,
+        product_status=status_filter,
+        search=search,
     )
-    return ProductListRead(
-        items=products,
+    return SellerProductListRead(
+        items=[_seller_product_list_item(product) for product in products],
         total_count=total_count,
         limit=bounded_limit,
         offset=bounded_offset,

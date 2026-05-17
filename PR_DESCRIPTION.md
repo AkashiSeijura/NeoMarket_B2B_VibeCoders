@@ -680,3 +680,55 @@ Decision: use a persisted `fulfilled_orders` table. The service claims `order_id
 After the UUID migration, fulfillment HTTP request bodies must carry `sku_id` as JSON strings because real clients cannot send Python `uuid.UUID` objects. Both canonical `/api/v1/inventory/fulfill` and legacy `/api/v1/fulfill` parse those strings into `uuid.UUID` instances for service and SQLAlchemy lookups, while persisted idempotency payloads serialize SKU identifiers back to strings.
 
 Decision: keep fulfillment schemas, routing, and service logic UUID-aware, remove integer SKU parsing from fulfill normalization, and update fulfillment tests to send `str(sku.id)` in all JSON payloads. Fulfillment idempotency, service-key authentication, reserved stock deduction, active stock behavior, and all-or-nothing rollback behavior are unchanged.
+
+---
+
+# US-B2B-11 Summary
+
+Implemented seller product list enhancements on top of the stacked US-B2B-01 through US-B2B-10 changes. This PR depends on US-B2B-01 through US-B2B-10 until those changes are merged.
+
+`GET /api/v1/products` keeps the existing mode routing: a valid `X-Service-Key` uses B2C catalog mode, an invalid service key returns `401`, and no service key requires a seller Bearer JWT for seller-list mode. Seller-list mode takes `seller_id` only from JWT claims and ignores ownership query parameters such as `seller_id`, `sellerId`, `owner_id`, and `user_id`.
+
+Seller-list mode now returns only the authenticated seller's products, includes deleted products with `deleted: true`, supports `limit`/`offset` bounds, exact `status` filtering, and case-insensitive trimmed title `search`. Invalid `status` returns `400 {"code":"INVALID_REQUEST","message":"status must be valid"}`. B2C catalog behavior is unchanged and still excludes deleted products.
+
+The seller-list response now uses a dedicated schema with `id`, `title`, `status`, `deleted`, `category`, `images`, `skus_count`, `total_active_quantity`, and `created_at`, plus top-level `items`, `total_count`, `limit`, and `offset`.
+
+OpenAPI gap: `flow/b2b.yaml` is stale for this story. It documents `/api/products/my` and does not match the canonical `GET /api/v1/products` seller-list contract in `flow/b2b-flows.md#list-products`, so `flow/*` was left unchanged.
+
+Deleted visibility note: US-B2B-11 supersedes US-B2B-04's earlier minimal seller-list behavior. Seller list now includes deleted products, while B2C catalog still excludes them.
+
+No migration is needed.
+
+# US-B2B-11 Validation
+
+Pytest proof commands:
+
+```powershell
+python -m pytest tests/api/test_products.py -vv -k "test_list_returns_only_own_products or test_idor_query_param_seller_id_ignored or test_deleted_products_visible_with_deleted_flag or test_status_filter_works_correctly or test_search_by_title_case_insensitive"
+python -m pytest tests/api/test_products.py -vv -k "catalog_returns_moderated_in_stock_products or catalog_excludes_hard_blocked or catalog_missing_service_key_returns_401 or catalog_response_has_no_cost_price or batch_ids_returns_visible_subset or get_moderated_product_returns_full_payload or get_others_product_returns_404"
+python -m pytest tests/api/test_products.py tests/api/test_skus.py tests/api/test_invoices.py tests/api/test_reservations.py tests/api/test_moderation_events.py tests/api/test_fulfillment.py -vv
+```
+
+Required scenario results:
+
+- `test_list_returns_only_own_products`: passed
+- `test_idor_query_param_seller_id_ignored`: passed
+- `test_deleted_products_visible_with_deleted_flag`: passed
+- `test_status_filter_works_correctly`: passed
+- `test_search_by_title_case_insensitive`: passed
+
+Regression results:
+
+- Required US-B2B-11 scenarios: 5 passed, 19 deselected
+- Catalog/detail regression selection: 7 passed, 17 deselected
+- `tests/api/test_products.py tests/api/test_skus.py tests/api/test_invoices.py tests/api/test_reservations.py tests/api/test_moderation_events.py tests/api/test_fulfillment.py`: 69 passed
+
+# ADR: Seller List SKU Aggregates
+
+Options considered:
+
+- SQL aggregate count/sum: selected. It avoids N+1 queries, keeps list responses bounded as SKU counts grow, and fits the existing SQLAlchemy service layer with moderate maintenance cost.
+- Prefetch and compute in serializer/service: simpler at first, but risks loading unnecessary SKU rows for every product as list size grows.
+- Raw SQL: efficient, but higher maintenance and less consistent with the existing ORM service style.
+
+Decision: use a grouped SQLAlchemy aggregate subquery over `SKU.product_id`, with an outer join from products so products without SKUs return `skus_count=0` and `total_active_quantity=0`.
