@@ -59,6 +59,7 @@ def create_sku(db: Session, payload: SKUCreate, seller_id: uuid.UUID) -> SKU:
         raise SKUForbiddenError("Cannot add SKU to hard-blocked product")
 
     should_send_moderation_event = product.status == ProductStatus.CREATED and len(product.skus) == 0
+    image = payload.images[0].url if payload.images else payload.image or ""
 
     sku = SKU(
         product_id=payload.product_id,
@@ -66,7 +67,8 @@ def create_sku(db: Session, payload: SKUCreate, seller_id: uuid.UUID) -> SKU:
         price=payload.price,
         cost_price=payload.cost_price,
         discount=payload.discount,
-        image=payload.image,
+        article=payload.article,
+        image=image,
         active_quantity=payload.active_quantity,
         reserved_quantity=0,
     )

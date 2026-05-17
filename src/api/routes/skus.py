@@ -36,13 +36,11 @@ def _sku_validation_message(exc: PydanticValidationError) -> str:
     if field in {"product_id", "productId"}:
         return "product_id must be valid"
     if field == "price":
-        return "price must be a positive integer (kopecks)"
+        return "price must be a non-negative integer (kopecks)"
     if field == "cost_price":
-        return "cost_price must be a positive integer (kopecks)"
+        return "cost_price must be a non-negative integer (kopecks)"
     if field == "discount":
         return "discount must be a non-negative integer (kopecks)"
-    if field == "image":
-        return "image is required"
     return str(error.get("msg") or "Invalid SKU payload")
 
 
@@ -58,10 +56,6 @@ async def _parse_sku_create_payload(request: Request) -> SKUCreate | JSONRespons
     payload_data = dict(body)
     payload_data.pop("seller_id", None)
     payload_data.pop("sellerId", None)
-
-    image = payload_data.get("image")
-    if not isinstance(image, str) or not image.strip():
-        return _invalid_request("image is required")
 
     try:
         return SKUCreate.model_validate(payload_data)

@@ -18,13 +18,17 @@ def upgrade() -> None:
 
     op.add_column(
         "skus",
-        sa.Column("cost_price", sa.Integer(), nullable=False, server_default=sa.text("0")),
+        sa.Column("cost_price", sa.Integer(), nullable=True),
     )
-    op.alter_column("skus", "cost_price", server_default=None)
 
     op.add_column(
         "skus",
         sa.Column("discount", sa.Integer(), nullable=False, server_default=sa.text("0")),
+    )
+
+    op.add_column(
+        "skus",
+        sa.Column("article", sa.String(length=255), nullable=True),
     )
 
     op.add_column(
@@ -42,5 +46,6 @@ def upgrade() -> None:
 def downgrade() -> None:
     op.drop_column("skus", "reserved_quantity")
     op.drop_column("skus", "image")
+    op.drop_column("skus", "article")
     op.drop_column("skus", "discount")
     op.drop_column("skus", "cost_price")

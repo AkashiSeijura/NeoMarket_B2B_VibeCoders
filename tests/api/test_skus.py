@@ -65,9 +65,14 @@ def sku_payload(product_id: int, **overrides) -> dict:
         "product_id": product_id,
         "name": "256GB Black",
         "price": 12999000,
-        "cost_price": 9500000,
         "discount": 0,
-        "image": "/s3/iphone15-black-256.jpg",
+        "article": "IPHONE15-BLACK-256",
+        "images": [
+            {
+                "url": "/s3/iphone15-black-256.jpg",
+                "ordering": 0,
+            }
+        ],
         "characteristics": [
             {
                 "name": "Color",
@@ -113,12 +118,19 @@ def test_first_sku_transitions_product_to_on_moderation(
 
     assert response.status_code == 201
     body = response.json()
-    assert body["product_id"] == product.id
+    assert body["id"]
+    assert body["product_id"] == str(product.id)
     assert body["name"] == "256GB Black"
-    assert body["cost_price"] == 9500000
+    assert body["cost_price"] is None
     assert body["discount"] == 0
+    assert body["article"] == "IPHONE15-BLACK-256"
     assert body["image"] == "/s3/iphone15-black-256.jpg"
+    assert body["images"] == [{"url": "/s3/iphone15-black-256.jpg", "ordering": 0}]
+    assert body["stock_quantity"] == 0
+    assert body["active_quantity"] == 0
     assert body["reserved_quantity"] == 0
+    assert body["created_at"]
+    assert body["updated_at"]
 
     db_session.refresh(product)
     assert product.status == ProductStatus.ON_MODERATION
@@ -166,6 +178,7 @@ def test_second_sku_no_state_change(
     )
 
     assert response.status_code == 201
+    assert response.json()["product_id"] == str(product.id)
     db_session.refresh(product)
     assert product.status == ProductStatus.ON_MODERATION
     assert sku_count(db_session, product.id) == 2
@@ -192,7 +205,7 @@ def test_add_sku_to_hard_blocked_returns_403(
     assert moderation_requests == []
 
 
-def test_missing_image_returns_400(
+def test_missing_images_and_cost_price_returns_201(
     client,
     db_session: Session,
     product_factory,
@@ -200,32 +213,77 @@ def test_missing_image_returns_400(
     moderation_requests,
 ):
     product = product_factory()
-    payload = sku_payload(product.id)
-    payload.pop("image")
+    payload = {
+        "product_id": product.id,
+        "name": "256GB Black",
+        "price": 0,
+    }
 
     response = client.post("/api/v1/skus", json=payload, headers=auth_headers(SELLER_ID))
 
-    assert response.status_code == 400
-    assert response.json() == {
-        "code": "INVALID_REQUEST",
-        "message": "image is required",
-    }
-    assert sku_count(db_session, product.id) == 0
-    assert moderation_requests == []
+    assert response.status_code == 201
+    body = response.json()
+    assert body["product_id"] == str(product.id)
+    assert body["price"] == 0
+    assert body["cost_price"] is None
+    assert body["image"] == ""
+    assert body["images"] == []
+    assert sku_count(db_session, product.id) == 1
+    assert len(moderation_requests) == 1
 
-    response = client.post(
-        "/api/v1/skus",
-        json=sku_payload(product.id, image="   "),
-        headers=auth_headers(SELLER_ID),
-    )
 
-    assert response.status_code == 400
-    assert response.json() == {
-        "code": "INVALID_REQUEST",
-        "message": "image is required",
+def test_images_array_maps_first_image_to_existing_image(
+    client,
+    db_session: Session,
+    product_factory,
+    auth_headers,
+    moderation_requests,
+):
+    product = product_factory()
+
+    response = client.post("/api/v1/skus", json=sku_payload(product.id), headers=auth_headers(SELLER_ID))
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["image"] == "/s3/iphone15-black-256.jpg"
+    assert body["images"] == [{"url": "/s3/iphone15-black-256.jpg", "ordering": 0}]
+
+    sku = db_session.scalar(select(SKU).where(SKU.product_id == product.id))
+    assert sku is not None
+    assert sku.image == "/s3/iphone15-black-256.jpg"
+    assert sku.article == "IPHONE15-BLACK-256"
+    assert len(moderation_requests) == 1
+
+
+def test_legacy_image_field_still_accepted(
+    client,
+    db_session: Session,
+    product_factory,
+    auth_headers,
+    moderation_requests,
+):
+    product = product_factory()
+    payload = {
+        "product_id": product.id,
+        "name": "256GB Black",
+        "price": 12999000,
+        "cost_price": 9500000,
+        "image": "/s3/legacy-image.jpg",
     }
-    assert sku_count(db_session, product.id) == 0
-    assert moderation_requests == []
+
+    response = client.post("/api/v1/skus", json=payload, headers=auth_headers(SELLER_ID))
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["cost_price"] == 9500000
+    assert body["image"] == "/s3/legacy-image.jpg"
+    assert body["images"] == [{"url": "/s3/legacy-image.jpg", "ordering": 0}]
+
+    sku = db_session.scalar(select(SKU).where(SKU.product_id == product.id))
+    assert sku is not None
+    assert sku.image == "/s3/legacy-image.jpg"
+    assert sku.cost_price == 9500000
+    assert len(moderation_requests) == 1
 
 
 def test_first_sku_moderation_failure_rolls_back(
