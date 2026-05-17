@@ -127,9 +127,9 @@ def patch_product_endpoint(
         return _error(502, "MODERATION_UNAVAILABLE", "Moderation service unavailable")
 
 
-@router.delete("/{id}", response_model=None, status_code=status.HTTP_204_NO_CONTENT)
+@router.delete("/{product_id}", response_model=None, status_code=status.HTTP_204_NO_CONTENT)
 def delete_product_endpoint(
-    id: uuid.UUID,
+    product_id: uuid.UUID,
     current_seller: CurrentSeller | JSONResponse = Depends(get_current_seller),
     db: Session = Depends(get_db),
 ) -> Response | JSONResponse:
@@ -137,7 +137,7 @@ def delete_product_endpoint(
         return current_seller
 
     try:
-        delete_product(db, id, current_seller.seller_id)
+        delete_product(db, product_id, current_seller.seller_id)
     except NotFoundError:
         return _error(404, "NOT_FOUND", "Product not found")
     except ProductOwnerError as exc:

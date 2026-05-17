@@ -166,9 +166,9 @@ Decision: add canonical `PATCH /api/v1/products/{product_id}` and `PATCH /api/v1
 
 # US-B2B-04 Summary
 
-Implemented soft delete for `DELETE /api/v1/products/{id}` on top of US-B2B-01, US-B2B-02, and US-B2B-03. This remains a stacked change until those earlier slices are merged.
+Implemented soft delete for `DELETE /api/v1/products/{product_id}` on top of US-B2B-01, US-B2B-02, and US-B2B-03. This remains a stacked change until those earlier slices are merged.
 
-The endpoint authenticates the seller from JWT claims, rejects other sellers with `403 NOT_OWNER`, rejects already-deleted products with `400 INVALID_REQUEST`, and marks the product with `deleted=true` without physically deleting products, SKUs, images, characteristics, invoices, or historical data. Successful deletes return `{"ok": true}`.
+The endpoint authenticates the seller from JWT claims, rejects other sellers with `403 NOT_OWNER`, rejects already-deleted products with `400 INVALID_REQUEST`, and marks the product with `deleted=true` without physically deleting products, SKUs, images, characteristics, invoices, or historical data. Successful deletes follow `flow/neomarket-b2b.yaml` and return exactly `204 No Content` with an empty response body.
 
 Added the product `deleted` column and migration `0005_add_product_deleted.py`. Added a minimal seller product list at `GET /api/v1/products` that uses only the JWT seller identity and filters out `deleted=true` products; query parameters such as `seller_id` are not trusted for ownership.
 
@@ -178,10 +178,9 @@ The canonical flow requires UUID idempotency keys but does not define generation
 
 # US-B2B-04 Validation
 
-Pytest proof commands:
+Pytest proof command:
 
 ```powershell
-python -m pytest tests/api/test_products.py -vv -k "test_delete_sets_deleted_true or test_delete_emits_event_to_moderation or test_delete_emits_product_deleted_to_b2c or test_delete_already_deleted_returns_400 or test_delete_others_product_returns_403 or test_deleted_product_not_in_seller_list"
 python -m pytest tests/api/test_products.py tests/api/test_skus.py -vv
 ```
 
@@ -197,7 +196,21 @@ Required scenario results:
 Suite results:
 
 - Required US-B2B-04 scenarios: 6 passed
-- `tests/api/test_products.py tests/api/test_skus.py`: 22 passed
+- `tests/api/test_products.py tests/api/test_skus.py`: 27 passed
+
+Old tests superseded by `flow/neomarket-b2b.yaml`:
+
+- Successful product delete no longer returns `200 {"ok": true}`.
+- Successful product delete now asserts `204 No Content` and an empty response body.
+
+# ADR: Product Delete Contract Source
+
+Options considered:
+
+- Keep the old `flow/b2b-flows.md` success response: preserves the first US-B2B-04 implementation, but conflicts with the authoritative same-path contract.
+- Follow `flow/neomarket-b2b.yaml`: changes only the HTTP success contract while preserving the existing delete business logic and side effects.
+
+Decision: same-path conflicts are resolved in favor of `flow/neomarket-b2b.yaml`. `DELETE /api/v1/products/{product_id}` returns `204 No Content` on success and does not return `{"ok": true}`.
 
 # ADR: Product Delete Event Delivery
 
