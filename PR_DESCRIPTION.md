@@ -10,7 +10,7 @@ Database IDs remain integers internally. The create response serializes product 
 
 Review fixes:
 - Images are required by canon-flow B2B-1.
-- Nested product images and characteristics now include `id` per OpenAPI response schemas.
+- Shared `ImageOut` and `CharacteristicOut` now include server `id` per OpenAPI response schemas.
 
 # Validation
 

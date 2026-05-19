@@ -1,4 +1,4 @@
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_serializer
 
 
 class APIModel(BaseModel):
@@ -20,7 +20,11 @@ class ImagePayload(APIModel):
 
 
 class ImageOut(ImagePayload):
-    pass
+    id: int
+
+    @field_serializer("id")
+    def serialize_id(self, value: int) -> str:
+        return str(value)
 
 
 class CharacteristicPayload(APIModel):
@@ -29,5 +33,9 @@ class CharacteristicPayload(APIModel):
 
 
 class CharacteristicOut(CharacteristicPayload):
-    pass
+    id: int
+
+    @field_serializer("id")
+    def serialize_id(self, value: int) -> str:
+        return str(value)
 
