@@ -6,7 +6,6 @@ from pydantic import AliasChoices, Field, model_validator
 
 from src.schemas.common import APIModel, CharacteristicOut, CharacteristicPayload, ImageOut, ImagePayload
 
-
 SKU_IMAGE_NAMESPACE = uuid.UUID("ec18e7b4-9898-5d27-a588-cf5810cb78bd")
 
 

@@ -44,6 +44,8 @@ The SKU endpoint authenticates the seller from JWT claims, verifies that the par
 
 The create response keeps DB IDs as integers internally but serializes SKU `id` and `product_id` as strings at the API boundary. It also returns `article`, `images[]`, `stock_quantity`, `created_at`, and `updated_at` where the existing storage model can support them safely. For the first SKU on a `CREATED` product, the product transitions to `ON_MODERATION` and sends exactly one Moderation `CREATED` event. Additional SKUs on products already in moderation do not send events or change state.
 
+External arbiter response-contract fix: the shared `ImageOut` and `CharacteristicOut` schemas include `id`. SKU characteristics return their persisted row ids. SKU images use a response-boundary synthetic id shaped as `sku-image:{sku.id}:0` because this codebase stores only one `skus.image` URL and has no SKU image table. No DB migration for SKU images is introduced.
+
 The Moderation event is sent to `{moderation_url}/api/v1/events/product` with `X-Service-Key`. The payload includes `idempotency_key`, `product_id`, `seller_id`, `event`, and `date`. The canonical flow requires an `idempotency_key`, but does not define deterministic generation or a UUID namespace; this implementation uses a stable UUIDv5 derived from `product-created:<product_id>` with `uuid.NAMESPACE_URL`, and documents that as a local assumption.
 
 External arbiter response-contract compatibility is preserved after the UUID root fix: `SKURead` returns UUID `id` and `product_id`, includes the full seller-view SKU response fields, uses shared UUID-backed `CharacteristicOut`, and returns SKU image responses with deterministic response-only UUID ids when only the legacy `sku.image` URL exists.
@@ -53,12 +55,12 @@ External arbiter response-contract compatibility is preserved after the UUID roo
 Pytest proof command:
 
 ```powershell
-python -m pytest tests/api/test_skus.py -vv
+python -m pytest tests/api/test_products.py tests/api/test_skus.py -vv
 ```
 
 Results:
 
-- `tests/api/test_skus.py`: 8 passed
+- `tests/api/test_products.py tests/api/test_skus.py`: 13 passed
 
 Old tests superseded by `flow/neomarket-b2b.yaml`:
 
@@ -74,6 +76,8 @@ Options considered:
 - Bridge `images[]` onto the existing single image column: accepts the neomarket request shape for US-B2B-02 while avoiding unrelated image-management work.
 
 Decision: bridge `images[0].url` to the existing `skus.image` column and keep legacy `image` accepted. `cost_price` is stored as nullable because the branch-owned migration adds the column and the authoritative request schema makes it optional/nullable.
+
+External arbiter decision: keep shared response `id` fields intact. SKU image ids are synthetic at the response boundary because US-B2B-02 does not add SKU image persistence; persisted DB ids are used for SKU characteristics.
 
 # ADR: SKU Moderation Event Delivery
 

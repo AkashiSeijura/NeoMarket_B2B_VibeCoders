@@ -105,6 +105,16 @@ def create_existing_sku(db_session: Session, product: Product) -> SKU:
     return sku
 
 
+def assert_sku_image(body: dict, url: str) -> None:
+    assert len(body["images"]) == 1
+    image = body["images"][0]
+    assert image["id"]
+    assert image["id"].startswith("sku-image:")
+    assert image["id"] != body["id"]
+    assert image["url"] == url
+    assert image["ordering"] == 0
+
+
 def test_first_sku_transitions_product_to_on_moderation(
     client,
     db_session: Session,
@@ -125,7 +135,10 @@ def test_first_sku_transitions_product_to_on_moderation(
     assert body["discount"] == 0
     assert body["article"] == "IPHONE15-BLACK-256"
     assert body["image"] == "/s3/iphone15-black-256.jpg"
-    assert body["images"] == [{"url": "/s3/iphone15-black-256.jpg", "ordering": 0}]
+    assert_sku_image(body, "/s3/iphone15-black-256.jpg")
+    assert body["characteristics"][0]["id"]
+    assert body["characteristics"][0]["name"] == "Color"
+    assert body["characteristics"][0]["value"] == "Black"
     assert body["stock_quantity"] == 0
     assert body["active_quantity"] == 0
     assert body["reserved_quantity"] == 0
@@ -246,10 +259,12 @@ def test_images_array_maps_first_image_to_existing_image(
     assert response.status_code == 201
     body = response.json()
     assert body["image"] == "/s3/iphone15-black-256.jpg"
-    assert body["images"] == [{"url": "/s3/iphone15-black-256.jpg", "ordering": 0}]
+    assert_sku_image(body, "/s3/iphone15-black-256.jpg")
+    assert body["characteristics"][0]["id"]
 
     sku = db_session.scalar(select(SKU).where(SKU.product_id == product.id))
     assert sku is not None
+    assert body["images"][0]["id"] != str(sku.id)
     assert sku.image == "/s3/iphone15-black-256.jpg"
     assert sku.article == "IPHONE15-BLACK-256"
     assert len(moderation_requests) == 1
@@ -277,10 +292,11 @@ def test_legacy_image_field_still_accepted(
     body = response.json()
     assert body["cost_price"] == 9500000
     assert body["image"] == "/s3/legacy-image.jpg"
-    assert body["images"] == [{"url": "/s3/legacy-image.jpg", "ordering": 0}]
+    assert_sku_image(body, "/s3/legacy-image.jpg")
 
     sku = db_session.scalar(select(SKU).where(SKU.product_id == product.id))
     assert sku is not None
+    assert body["images"][0]["id"] != str(sku.id)
     assert sku.image == "/s3/legacy-image.jpg"
     assert sku.cost_price == 9500000
     assert len(moderation_requests) == 1
