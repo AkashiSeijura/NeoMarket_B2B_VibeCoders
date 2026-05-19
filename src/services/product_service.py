@@ -40,6 +40,9 @@ def get_product_by_id(db: Session, product_id: int) -> Product:
 
 
 def create_product(db: Session, payload: ProductCreate, seller_id: str) -> Product:
+    if not payload.images:
+        raise ProductCreateValidationError("images", "At least one image is required")
+
     if db.get(Category, payload.category_id) is None:
         raise ProductCreateValidationError("category_id", "Category not found")
 

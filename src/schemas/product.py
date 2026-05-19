@@ -8,7 +8,6 @@ from src.schemas.common import (
     CategoryOut,
     CharacteristicOut,
     CharacteristicPayload,
-    ImageOut,
     ImagePayload,
 )
 
@@ -32,6 +31,22 @@ class ProductUpdate(APIModel):
     characteristics: list[CharacteristicPayload] | None = None
 
 
+class ProductImageOut(ImagePayload):
+    id: int
+
+    @field_serializer("id")
+    def serialize_id(self, value: int) -> str:
+        return str(value)
+
+
+class ProductCharacteristicOut(CharacteristicPayload):
+    id: int
+
+    @field_serializer("id")
+    def serialize_id(self, value: int) -> str:
+        return str(value)
+
+
 class ProductSKURead(APIModel):
     id: int
     name: str
@@ -48,8 +63,8 @@ class ProductRead(APIModel):
     description: str
     status: str
     category: CategoryOut
-    images: list[ImageOut] = Field(default_factory=list)
-    characteristics: list[CharacteristicOut] = Field(default_factory=list)
+    images: list[ProductImageOut] = Field(default_factory=list)
+    characteristics: list[ProductCharacteristicOut] = Field(default_factory=list)
     skus: list[ProductSKURead] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime

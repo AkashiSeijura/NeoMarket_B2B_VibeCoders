@@ -30,6 +30,13 @@ def _field_validation_error(field: str, message: str) -> JSONResponse:
     )
 
 
+def _invalid_request(message: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=400,
+        content={"code": "INVALID_REQUEST", "message": message},
+    )
+
+
 @router.post("", response_model=ProductCreateRead, status_code=status.HTTP_201_CREATED)
 async def create_product_endpoint(
     payload: ProductCreate,
@@ -42,6 +49,8 @@ async def create_product_endpoint(
     try:
         return create_product(db, payload, current_seller.seller_id)
     except ProductCreateValidationError as exc:
+        if exc.field == "images":
+            return _invalid_request(exc.message)
         return _field_validation_error(exc.field, exc.message)
 
 
