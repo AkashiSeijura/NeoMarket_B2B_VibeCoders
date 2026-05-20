@@ -88,6 +88,48 @@ class ProductSKURead(APIModel):
         }
 
 
+class ProductSKUImageOut(ImageOut):
+    id: str
+
+
+class ProductSKUResponse(APIModel):
+    id: int
+    product_id: int
+    name: str
+    price: int
+    discount: int
+    cost_price: int | None
+    active_quantity: int
+    reserved_quantity: int
+    article: str | None = None
+    image: str = Field(default="", exclude=True)
+    characteristics: list[CharacteristicOut] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+
+    @computed_field
+    @property
+    def stock_quantity(self) -> int:
+        return self.active_quantity + self.reserved_quantity
+
+    @computed_field
+    @property
+    def images(self) -> list[ProductSKUImageOut]:
+        if not self.image:
+            return []
+        return [
+            ProductSKUImageOut(
+                id=f"sku-image:{self.id}:0",
+                url=self.image,
+                ordering=0,
+            )
+        ]
+
+    @field_serializer("id", "product_id")
+    def serialize_id(self, value: int) -> str:
+        return str(value)
+
+
 class ProductRead(APIModel):
     id: uuid.UUID
     seller_id: uuid.UUID
@@ -114,4 +156,8 @@ class ProductRead(APIModel):
 
 class ProductCreateRead(ProductRead):
     pass
+
+
+class ProductResponse(ProductCreateRead):
+    skus: list[ProductSKUResponse] = Field(default_factory=list)
 

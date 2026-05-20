@@ -103,6 +103,8 @@ US-B2B-03 does not add SKU `images[]` update support. Image-management endpoints
 
 Added `ProductStatus.BLOCKED` and migration `0004_add_blocked_product_status.py` using `ALTER TYPE product_status ADD VALUE IF NOT EXISTS 'BLOCKED'` inside Alembic `autocommit_block()`. Existing migrations were left unchanged.
 
+Arbiter contract fix: product edit responses now use the ProductResponse-required top-level fields `slug`, `deleted`, `blocking_reason_id`, and `moderator_comment`. Nested product SKUs now include SKUResponse-required fields including `product_id`, `discount`, `cost_price`, `stock_quantity`, `active_quantity`, `reserved_quantity`, `article`, `images`, `created_at`, and `updated_at`. Shared `ImageOut` and `CharacteristicOut` `id` fields are preserved for product images, product characteristics, SKU image response objects, and SKU characteristics.
+
 # US-B2B-03 Validation
 
 Pytest proof commands:
@@ -126,7 +128,7 @@ Required scenario results:
 Suite results:
 
 - Focused US-B2B-03 route migration scenarios: 4 passed
-- `tests/api/test_products.py tests/api/test_skus.py`: 21 passed
+- `tests/api/test_products.py tests/api/test_skus.py`: 22 passed
 
 Pytest completed without warnings in this run.
 

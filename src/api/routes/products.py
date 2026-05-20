@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from src.api.deps import CurrentSeller, get_current_seller
 from src.db.session import get_db
-from src.schemas.product import ProductCreate, ProductCreateRead, ProductRead, ProductUpdate
+from src.schemas.product import ProductCreate, ProductCreateRead, ProductRead, ProductResponse, ProductUpdate
 from src.services.product_service import (
     ModerationUnavailableError,
     ProductCreateValidationError,
@@ -60,13 +60,13 @@ def get_product_endpoint(id: uuid.UUID, db: Session = Depends(get_db)) -> Produc
     return get_product_by_id(db, id)
 
 
-@router.put("/{id}", response_model=ProductRead, status_code=status.HTTP_200_OK)
+@router.put("/{id}", response_model=ProductResponse, status_code=status.HTTP_200_OK)
 def update_product_endpoint(
     id: uuid.UUID,
     payload: ProductUpdate,
     current_seller: CurrentSeller | JSONResponse = Depends(get_current_seller),
     db: Session = Depends(get_db),
-) -> ProductRead | JSONResponse:
+) -> ProductResponse | JSONResponse:
     if isinstance(current_seller, JSONResponse):
         return current_seller
 
@@ -80,13 +80,13 @@ def update_product_endpoint(
         return _error(502, "MODERATION_UNAVAILABLE", "Moderation service unavailable")
 
 
-@router.patch("/{product_id}", response_model=ProductRead, status_code=status.HTTP_200_OK)
+@router.patch("/{product_id}", response_model=ProductResponse, status_code=status.HTTP_200_OK)
 def patch_product_endpoint(
     product_id: int,
     payload: ProductUpdate,
     current_seller: CurrentSeller | JSONResponse = Depends(get_current_seller),
     db: Session = Depends(get_db),
-) -> ProductRead | JSONResponse:
+) -> ProductResponse | JSONResponse:
     if isinstance(current_seller, JSONResponse):
         return current_seller
 

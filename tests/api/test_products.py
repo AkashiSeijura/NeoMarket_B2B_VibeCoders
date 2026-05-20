@@ -49,6 +49,7 @@ def product_factory(db_session: Session, category_factory):
             status=status,
         )
         product.images = [ProductImage(url="/s3/iphone15-front.jpg", ordering=0)]
+        product.characteristics = [ProductCharacteristic(name="Brand", value="Apple")]
         db_session.add(product)
         db_session.commit()
         db_session.refresh(product)
@@ -76,6 +77,25 @@ def _assert_product_response_contract(body: dict) -> None:
     assert body["deleted"] is False
     assert body["blocking_reason_id"] is None
     assert body["moderator_comment"] is None
+
+
+def create_existing_sku(db_session: Session, product: Product, *, image: str = "/s3/iphone15-black-128.jpg") -> SKU:
+    sku = SKU(
+        product_id=product.id,
+        name="128GB Black",
+        price=9999000,
+        cost_price=7000000,
+        discount=10,
+        article="IPHONE15-BLACK-128",
+        image=image,
+        active_quantity=4,
+        reserved_quantity=3,
+    )
+    sku.characteristics = [SKUCharacteristic(name="Color", value="Black")]
+    db_session.add(sku)
+    db_session.commit()
+    db_session.refresh(sku)
+    return sku
 
 
 def test_create_product_returns_201_with_created_status(client, category_factory, product_payload_factory, auth_headers):
@@ -283,6 +303,12 @@ def test_patch_product_alias_returns_to_on_moderation(
     assert body["title"] == "iPhone 15 Pro Max Updated"
     assert body["seller_id"] == SELLER_ID
     assert body["status"] == "ON_MODERATION"
+    assert body["slug"] == f"iphone-15-pro-max-updated-{product.id}"
+    assert body["deleted"] is False
+    assert body["blocking_reason_id"] is None
+    assert body["moderator_comment"] is None
+    assert body["images"][0]["id"]
+    assert body["characteristics"][0]["id"]
 
     db_session.refresh(product)
     assert product.status == ProductStatus.ON_MODERATION
@@ -313,8 +339,53 @@ def test_legacy_put_product_edit_route_remains_supported(
     body = response.json()
     assert body["description"] == "Updated description"
     assert body["status"] == "ON_MODERATION"
+    assert body["slug"] == f"iphone-15-pro-max-{product.id}"
+    assert body["deleted"] is False
+    assert body["blocking_reason_id"] is None
+    assert body["moderator_comment"] is None
 
     db_session.refresh(product)
     assert product.status == ProductStatus.ON_MODERATION
     assert len(moderation_requests) == 1
     assert moderation_requests[0]["json"]["event"] == "EDITED"
+
+
+def test_patch_product_response_includes_nested_sku_contract_fields(
+    client,
+    db_session: Session,
+    product_factory,
+    auth_headers,
+    moderation_requests,
+):
+    product = product_factory(status=ProductStatus.CREATED)
+    sku = create_existing_sku(db_session, product)
+
+    response = client.patch(
+        f"/api/v1/products/{product.id}",
+        json={"title": "iPhone 15 Pro Max Updated"},
+        headers=auth_headers(SELLER_ID),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["skus"]
+    response_sku = body["skus"][0]
+    assert response_sku["id"] == str(sku.id)
+    assert response_sku["product_id"] == str(product.id)
+    assert response_sku["name"] == "128GB Black"
+    assert response_sku["price"] == 9999000
+    assert response_sku["discount"] == 10
+    assert response_sku["cost_price"] == 7000000
+    assert response_sku["stock_quantity"] == 7
+    assert response_sku["active_quantity"] == 4
+    assert response_sku["reserved_quantity"] == 3
+    assert response_sku["article"] == "IPHONE15-BLACK-128"
+    assert response_sku["images"][0]["id"] == f"sku-image:{sku.id}:0"
+    assert response_sku["images"][0]["url"] == "/s3/iphone15-black-128.jpg"
+    assert response_sku["images"][0]["ordering"] == 0
+    assert response_sku["created_at"]
+    assert response_sku["updated_at"]
+    assert response_sku["characteristics"][0]["id"]
+    assert response_sku["characteristics"][0]["name"] == "Color"
+    assert response_sku["characteristics"][0]["value"] == "Black"
+    assert moderation_requests == []
