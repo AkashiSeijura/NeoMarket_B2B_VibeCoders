@@ -1,4 +1,6 @@
-from pydantic import BaseModel, ConfigDict, field_serializer
+import uuid
+
+from pydantic import BaseModel, ConfigDict
 
 
 class APIModel(BaseModel):
@@ -10,7 +12,7 @@ class APIModel(BaseModel):
 
 
 class CategoryOut(APIModel):
-    id: int
+    id: uuid.UUID
     name: str
 
 
@@ -20,11 +22,7 @@ class ImagePayload(APIModel):
 
 
 class ImageOut(ImagePayload):
-    id: int
-
-    @field_serializer("id")
-    def serialize_id(self, value: int) -> str:
-        return str(value)
+    id: uuid.UUID
 
 
 class CharacteristicPayload(APIModel):
@@ -33,9 +31,5 @@ class CharacteristicPayload(APIModel):
 
 
 class CharacteristicOut(CharacteristicPayload):
-    id: int
-
-    @field_serializer("id")
-    def serialize_id(self, value: int) -> str:
-        return str(value)
+    id: uuid.UUID
 

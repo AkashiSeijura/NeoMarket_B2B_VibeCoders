@@ -1,13 +1,29 @@
+from uuid import UUID, uuid4
+
 from sqlalchemy.orm import Session
 
-from src.models import Product
+from src.models import Product, ProductCharacteristic, ProductImage, ProductStatus, SKU, SKUCharacteristic
 
 
-def _assert_category_validation_detail(response):
+def _assert_validation_error(response):
     assert response.status_code == 422
-    detail = response.json()["detail"]
-    assert isinstance(detail, list)
-    assert detail[0]["loc"][-1] == "category_id"
+    body = response.json()
+    assert body["code"] == "VALIDATION_ERROR"
+    assert "detail" not in body
+    assert body["message"]
+
+
+def _assert_uuid(value: str) -> UUID:
+    parsed = UUID(value)
+    assert value not in {"1", "2", "3"}
+    return parsed
+
+
+def _assert_product_response_contract(body: dict) -> None:
+    assert body["slug"] == f"iphone-15-pro-max-{body['id']}"
+    assert body["deleted"] is False
+    assert body["blocking_reason_id"] is None
+    assert body["moderator_comment"] is None
 
 
 def test_create_product_returns_201_with_created_status(client, category_factory, product_payload_factory, auth_headers):
@@ -21,6 +37,7 @@ def test_create_product_returns_201_with_created_status(client, category_factory
     assert body["title"] == payload["title"]
     assert body["description"] == payload["description"]
     assert body["category_id"] == str(category.id)
+    assert body["category"]["id"] == str(category.id)
     assert body["status"] == "CREATED"
     assert body["skus"] == []
     assert body["images"][0]["id"]
@@ -30,12 +47,14 @@ def test_create_product_returns_201_with_created_status(client, category_factory
     assert body["characteristics"][0]["name"] == payload["characteristics"][0]["name"]
     assert body["characteristics"][0]["value"] == payload["characteristics"][0]["value"]
     assert body["seller_id"] == "c3d4e5f6-a7b8-9012-cdef-123456789012"
-    assert body["slug"] == f"iphone-15-pro-max-{body['id']}"
-    assert body["deleted"] is False
-    assert body["blocking_reason_id"] is None
-    assert body["moderator_comment"] is None
+    _assert_product_response_contract(body)
     assert "created_at" in body
     assert "updated_at" in body
+    _assert_uuid(body["id"])
+    _assert_uuid(body["category_id"])
+    _assert_uuid(body["seller_id"])
+    _assert_uuid(body["images"][0]["id"])
+    _assert_uuid(body["characteristics"][0]["id"])
 
 
 def test_seller_id_taken_from_jwt(
@@ -57,9 +76,69 @@ def test_seller_id_taken_from_jwt(
     assert body["seller_id"] == jwt_seller_id
     assert body["seller_id"] != body_seller_id
 
-    product = db_session.get(Product, int(body["id"]))
+    product_id = UUID(body["id"])
+    product = db_session.get(Product, product_id)
     assert product is not None
-    assert product.seller_id == jwt_seller_id
+    assert product.seller_id == UUID(jwt_seller_id)
+
+
+def test_get_product_returns_product_and_nested_sku_contract_fields(
+    client,
+    db_session: Session,
+    category_factory,
+):
+    category = category_factory()
+    product = Product(
+        title="iPhone 15 Pro Max",
+        description="Flagship smartphone",
+        category_id=category.id,
+        seller_id=uuid4(),
+        status=ProductStatus.CREATED,
+    )
+    product.images = [ProductImage(url="/s3/iphone15-front.jpg", ordering=0)]
+    product.characteristics = [ProductCharacteristic(name="Brand", value="Apple")]
+    sku = SKU(
+        product=product,
+        name="256 GB Natural Titanium",
+        price=12999000,
+        active_quantity=5,
+    )
+    sku.image = "/s3/iphone15-sku.jpg"
+    sku.characteristics = [SKUCharacteristic(name="Storage", value="256 GB")]
+
+    db_session.add(product)
+    db_session.commit()
+
+    response = client.get(f"/api/v1/products/{product.id}")
+
+    assert response.status_code == 200
+    body = response.json()
+    _assert_product_response_contract(body)
+    _assert_uuid(body["id"])
+    _assert_uuid(body["category_id"])
+    _assert_uuid(body["seller_id"])
+
+    assert len(body["skus"]) == 1
+    sku_body = body["skus"][0]
+    _assert_uuid(sku_body["id"])
+    _assert_uuid(sku_body["product_id"])
+    assert sku_body["name"] == sku.name
+    assert sku_body["price"] == sku.price
+    assert sku_body["discount"] == 0
+    assert sku_body["cost_price"] == 0
+    assert sku_body["stock_quantity"] == 0
+    assert sku_body["active_quantity"] == sku.active_quantity
+    assert sku_body["reserved_quantity"] == 0
+    assert sku_body["article"] is None
+    assert "created_at" in sku_body
+    assert "updated_at" in sku_body
+    assert len(sku_body["images"]) == 1
+    _assert_uuid(sku_body["images"][0]["id"])
+    assert sku_body["images"][0]["id"] != str(sku.id)
+    assert sku_body["images"][0]["url"] == sku.image
+    assert sku_body["images"][0]["ordering"] == 0
+    assert sku_body["characteristics"][0]["name"] == "Storage"
+    _assert_uuid(sku_body["characteristics"][0]["id"])
 
 
 def test_missing_images_returns_400(
@@ -84,21 +163,49 @@ def test_missing_images_returns_400(
     assert response.json() == {"code": "INVALID_REQUEST", "message": "At least one image is required"}
 
 
-def test_missing_category_returns_422_with_field_details(client, category_factory, product_payload_factory, auth_headers):
+def test_missing_category_returns_422_validation_error(client, category_factory, product_payload_factory, auth_headers):
     category = category_factory()
     payload = product_payload_factory(category.id)
     payload.pop("category_id")
 
     response = client.post("/api/v1/products", json=payload, headers=auth_headers())
 
-    _assert_category_validation_detail(response)
-    assert response.json()["detail"][0]["type"] == "missing"
+    _assert_validation_error(response)
+    assert "category_id" in response.json()["message"]
 
 
-def test_invalid_category_id_returns_422_with_field_details(client, product_payload_factory, auth_headers):
-    payload = product_payload_factory(category_id=999999)
+def test_invalid_category_id_returns_422_validation_error(client, product_payload_factory, auth_headers):
+    payload = product_payload_factory(category_id="not-a-uuid")
 
     response = client.post("/api/v1/products", json=payload, headers=auth_headers())
 
-    _assert_category_validation_detail(response)
-    assert response.json()["detail"][0]["msg"] == "Category not found"
+    _assert_validation_error(response)
+    assert "category_id" in response.json()["message"]
+
+
+def test_nonexistent_category_id_returns_422_validation_error(client, product_payload_factory, auth_headers):
+    payload = product_payload_factory(category_id=uuid4())
+
+    response = client.post("/api/v1/products", json=payload, headers=auth_headers())
+
+    _assert_validation_error(response)
+    assert response.json()["message"] == "category_id: Category not found"
+
+
+def test_invalid_title_and_description_return_422_validation_error(
+    client,
+    category_factory,
+    product_payload_factory,
+    auth_headers,
+):
+    category = category_factory()
+
+    payload = product_payload_factory(category.id, title="")
+    response = client.post("/api/v1/products", json=payload, headers=auth_headers())
+    _assert_validation_error(response)
+    assert "title" in response.json()["message"]
+
+    payload = product_payload_factory(category.id, description="")
+    response = client.post("/api/v1/products", json=payload, headers=auth_headers())
+    _assert_validation_error(response)
+    assert "description" in response.json()["message"]

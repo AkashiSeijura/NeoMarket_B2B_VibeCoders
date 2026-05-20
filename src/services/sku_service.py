@@ -1,3 +1,5 @@
+import uuid
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
@@ -10,14 +12,14 @@ def _sku_query():
     return select(SKU).options(selectinload(SKU.characteristics))
 
 
-def _get_product_or_raise(db: Session, product_id: int) -> Product:
+def _get_product_or_raise(db: Session, product_id: uuid.UUID) -> Product:
     product = db.get(Product, product_id)
     if product is None:
         raise NotFoundError(f"Product with id={product_id} not found")
     return product
 
 
-def _get_sku_or_raise(db: Session, sku_id: int) -> SKU:
+def _get_sku_or_raise(db: Session, sku_id: uuid.UUID) -> SKU:
     sku = db.scalars(_sku_query().where(SKU.id == sku_id)).first()
     if sku is None:
         raise NotFoundError(f"SKU with id={sku_id} not found")

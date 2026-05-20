@@ -1,7 +1,9 @@
 import re
 from datetime import datetime
+from typing import Any
+import uuid
 
-from pydantic import AliasChoices, Field, computed_field, field_serializer
+from pydantic import AliasChoices, Field, computed_field, model_validator
 
 from src.schemas.common import (
     APIModel,
@@ -12,11 +14,13 @@ from src.schemas.common import (
     ImagePayload,
 )
 
+SKU_IMAGE_NAMESPACE = uuid.UUID("ec18e7b4-9898-5d27-a588-cf5810cb78bd")
+
 
 class ProductCreate(APIModel):
     title: str = Field(min_length=1, max_length=255)
     description: str = Field(min_length=1, max_length=5000)
-    category_id: int = Field(validation_alias=AliasChoices("category_id", "categoryId"))
+    category_id: uuid.UUID = Field(validation_alias=AliasChoices("category_id", "categoryId"))
     images: list[ImagePayload] = Field(default_factory=list)
     characteristics: list[CharacteristicPayload] = Field(default_factory=list)
 
@@ -24,7 +28,7 @@ class ProductCreate(APIModel):
 class ProductUpdate(APIModel):
     title: str | None = None
     description: str | None = None
-    category_id: int | None = Field(
+    category_id: uuid.UUID | None = Field(
         default=None,
         validation_alias=AliasChoices("category_id", "categoryId"),
     )
@@ -33,17 +37,58 @@ class ProductUpdate(APIModel):
 
 
 class ProductSKURead(APIModel):
-    id: int
+    id: uuid.UUID
+    product_id: uuid.UUID
     name: str
     price: int
-    active_quantity: int = Field(serialization_alias="activeQuantity")
+    discount: int = 0
+    cost_price: int = 0
+    stock_quantity: int = 0
+    reserved_quantity: int = 0
+    article: str | None = None
+    active_quantity: int
+    images: list[ImageOut] = Field(default_factory=list)
     characteristics: list[CharacteristicOut] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+
+    @model_validator(mode="before")
+    @classmethod
+    def add_synthetic_images(cls, value: Any) -> Any:
+        image = value.get("image") if isinstance(value, dict) else getattr(value, "image", None)
+        if not image:
+            return value
+
+        sku_id = value.get("id") if isinstance(value, dict) else getattr(value, "id")
+        image_id = uuid.uuid5(SKU_IMAGE_NAMESPACE, f"sku-image:{sku_id}:0")
+
+        if isinstance(value, dict):
+            value = value.copy()
+            value.setdefault("images", [{"id": image_id, "url": image, "ordering": 0}])
+            return value
+
+        return {
+            "id": value.id,
+            "product_id": value.product_id,
+            "name": value.name,
+            "price": value.price,
+            "discount": getattr(value, "discount", 0),
+            "cost_price": getattr(value, "cost_price", 0),
+            "stock_quantity": getattr(value, "stock_quantity", 0),
+            "active_quantity": value.active_quantity,
+            "reserved_quantity": getattr(value, "reserved_quantity", 0),
+            "article": getattr(value, "article", None),
+            "images": [{"id": image_id, "url": image, "ordering": 0}],
+            "characteristics": getattr(value, "characteristics", []),
+            "created_at": value.created_at,
+            "updated_at": value.updated_at,
+        }
 
 
 class ProductRead(APIModel):
-    id: int
-    seller_id: str
-    category_id: int
+    id: uuid.UUID
+    seller_id: uuid.UUID
+    category_id: uuid.UUID
     title: str
     description: str
     status: str
@@ -53,9 +98,6 @@ class ProductRead(APIModel):
     skus: list[ProductSKURead] = Field(default_factory=list)
     created_at: datetime
     updated_at: datetime
-
-
-class ProductCreateRead(ProductRead):
     deleted: bool = False
     blocking_reason_id: str | None = None
     moderator_comment: str | None = None
@@ -66,7 +108,7 @@ class ProductCreateRead(ProductRead):
         value = re.sub(r"[^a-z0-9]+", "-", self.title.lower()).strip("-")
         return f"{value or 'product'}-{self.id}"
 
-    @field_serializer("id", "category_id")
-    def serialize_id(self, value: int) -> str:
-        return str(value)
+
+class ProductCreateRead(ProductRead):
+    pass
 

@@ -4,6 +4,7 @@ import hashlib
 import hmac
 import json
 from typing import Any
+import uuid
 
 from fastapi import Depends
 from fastapi.responses import JSONResponse
@@ -16,7 +17,7 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=Fals
 
 @dataclass(frozen=True)
 class CurrentSeller:
-    seller_id: str
+    seller_id: uuid.UUID
 
 
 def unauthorized_response() -> JSONResponse:
@@ -64,4 +65,9 @@ def get_current_seller(token: str | None = Depends(oauth2_scheme)) -> CurrentSel
     if not isinstance(seller_id, str) or not seller_id.strip():
         return unauthorized_response()
 
-    return CurrentSeller(seller_id=seller_id)
+    try:
+        seller_uuid = uuid.UUID(seller_id)
+    except ValueError:
+        return unauthorized_response()
+
+    return CurrentSeller(seller_id=seller_uuid)

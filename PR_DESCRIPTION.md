@@ -1,29 +1,36 @@
 # Summary
 
-## US-B2B-01 Product Creation
+## US-B2B-01: создание продукта
 
-Implemented `POST /api/v1/products` for B2B product creation. The endpoint creates products with `status=CREATED`, persists `seller_id` from the Bearer JWT `seller_id` claim only, ignores any body `seller_id` or `sellerId`, returns `skus=[]`, and keeps SKU-less products out of moderation.
+Реализован `POST /api/v1/products` для B2B-создания продукта. Эндпоинт создает продукт со статусом `CREATED`, сохраняет `seller_id` только из claim `seller_id` в Bearer JWT, игнорирует любые `seller_id` или `sellerId` из тела запроса, возвращает `skus=[]` и не отправляет продукт без SKU на модерацию.
 
-Images are required by canon-flow B2B-1. Omitted images and `images=[]` return canonical `400 INVALID_REQUEST` with `At least one image is required`. `category_id` remains required, and nonexistent categories return endpoint-scoped `422` field details for `category_id`.
+`images` обязательны по canon-flow B2B-1. Отсутствующее поле `images` и `images=[]` возвращают канонический `400 INVALID_REQUEST` с полевым описанием `At least one image is required`.
 
-Database IDs remain integers internally. The create response serializes product `id`, `category_id`, nested product image IDs, and nested product characteristic IDs as strings at the response boundary for contract compatibility. The create response also includes response-boundary compatibility fields: `slug`, `deleted`, `blocking_reason_id`, and `moderator_comment`.
+Контрактные идентификаторы продуктов теперь сохраняются как реальные UUID-backed значения, без stringification integer ID на границе ответа. Это покрывает `Category.id`, `Product.id`, `Product.category_id`, `Product.seller_id`, `ProductImage.id/product_id`, `ProductCharacteristic.id/product_id`, `SKU.id/product_id`, `SKUCharacteristic.id/sku_id` и ссылки invoice item на SKU. `ImageOut`, `CharacteristicOut` и вложенные SKU ids отдают UUID напрямую.
 
-Review fixes:
-- Images are required by canon-flow B2B-1.
-- Shared `ImageOut` and `CharacteristicOut` now include server `id` per OpenAPI response schemas.
+`ProductRead` и `ProductCreateRead` включают обязательные поля совместимости ответа: `slug`, `deleted`, `blocking_reason_id` и `moderator_comment`. Вложенные ответы SKU включают seller-view поля SKU, требуемые unified contract. Если экземпляр SKU-модели содержит одиночный URL `image` без отдельной таблицы изображений SKU, ответ формирует детерминированный UUID image id через `uuid5("sku-image:{sku_id}:0")`.
+
+Валидация запроса теперь возвращает плоскую Error schema: `422 {"code":"VALIDATION_ERROR","message":"..."}`. Отсутствующий `category_id`, невалидный UUID-синтаксис `category_id`, валидный, но несуществующий `category_id`, а также невалидные `title`/`description` используют эту форму вместо стандартного FastAPI `detail` list. Пользовательские ошибки `400`, `401`, `404` и `409` используют единый формат `{code, message}`.
+
+UUID-миграция рассчитана на свежее/текущее состояние проекта. Она переводит seeded categories на UUID и конвертирует контрактные product columns в UUID, но не пытается сделать полный data-preserving remap для уже заполненных PostgreSQL связей product/SKU/image/characteristic.
 
 # Validation
 
-Pytest proof command:
+Pytest proof commands:
 
 ```powershell
-python -m pytest tests/api/test_products.py -q -k "test_create_product_returns_201_with_created_status or test_seller_id_taken_from_jwt or test_missing_images_returns_400 or test_missing_category_returns_422_with_field_details or test_invalid_category_id_returns_422_with_field_details"
+python -m pytest tests/api/test_products.py -vv
+python -m pytest tests/api/test_products.py tests/api/test_skus.py -vv
 ```
+
+В рамках обновления этого описания тесты и форматтеры не запускались; проверялся только diff `PR_DESCRIPTION.md`.
 
 # Contract Notes
 
-`flow/neomarket-b2b.yaml` is the authoritative contract for US-B2B-01 product creation.
+Контракт сверялся с merged B2B OpenAPI и `b2b/openapi.yaml`. Локальное зеркало финальной OpenAPI-спецификации в этом репозитории находится в `flow/openapi.yaml`.
 
-# ADR: Product Characteristics Storage
+`flow/neomarket-b2b.yaml` не рассматривается как актуальный authoritative source для US-B2B-01.
 
-For product characteristics, this service keeps the existing separate `product_characteristics` table instead of moving values into a JSON field on `products` or introducing a generic EAV schema. A JSON field is easy to extend, but filtering by characteristic values becomes database-specific and harder to index predictably. A generic EAV schema is flexible, but it makes common filtering joins more complex and weakens type clarity. The separate `ProductCharacteristic` table is the smallest fit for the current model: adding new characteristics only inserts more rows, while filtering remains a straightforward join.
+# ADR: хранение характеристик продукта
+
+Для характеристик продукта сервис сохраняет существующую отдельную таблицу `product_characteristics`, а не переносит значения в JSON-поле на `products` и не вводит универсальную EAV-схему. JSON-поле проще расширять, но фильтрация по значениям характеристик становится database-specific и сложнее индексируется предсказуемо. EAV-схема гибкая, но усложняет типовые filtering joins и ослабляет ясность типов. Отдельная таблица `ProductCharacteristic` остается минимально подходящим решением для текущей модели: добавление новых характеристик требует только вставки новых строк, а фильтрация остается прямым join.

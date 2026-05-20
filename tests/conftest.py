@@ -2,6 +2,7 @@ import base64
 import hashlib
 import hmac
 import json
+from uuid import UUID
 from uuid import uuid4
 
 import pytest
@@ -61,11 +62,11 @@ def category_factory(db_session: Session):
 
 @pytest.fixture()
 def product_payload_factory():
-    def build_payload(category_id: int, **overrides):
+    def build_payload(category_id: UUID | str, **overrides):
         payload = {
             "title": "iPhone 15 Pro Max",
             "description": "Flagship smartphone",
-            "category_id": category_id,
+            "category_id": str(category_id),
             "images": [
                 {
                     "url": "/s3/iphone15-front.jpg",

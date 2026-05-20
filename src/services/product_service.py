@@ -1,3 +1,5 @@
+import uuid
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
@@ -25,21 +27,21 @@ def _product_query():
     )
 
 
-def _get_category_or_raise(db: Session, category_id: int) -> Category:
+def _get_category_or_raise(db: Session, category_id: uuid.UUID) -> Category:
     category = db.get(Category, category_id)
     if category is None:
         raise NotFoundError(f"Category with id={category_id} not found")
     return category
 
 
-def get_product_by_id(db: Session, product_id: int) -> Product:
+def get_product_by_id(db: Session, product_id: uuid.UUID) -> Product:
     product = db.scalars(_product_query().where(Product.id == product_id)).first()
     if product is None:
         raise NotFoundError(f"Product with id={product_id} not found")
     return product
 
 
-def create_product(db: Session, payload: ProductCreate, seller_id: str) -> Product:
+def create_product(db: Session, payload: ProductCreate, seller_id: uuid.UUID) -> Product:
     if not payload.images:
         raise ProductCreateValidationError("images", "At least one image is required")
 
@@ -63,7 +65,7 @@ def create_product(db: Session, payload: ProductCreate, seller_id: str) -> Produ
     return get_product_by_id(db, product.id)
 
 
-def update_product(db: Session, product_id: int, payload: ProductUpdate) -> Product:
+def update_product(db: Session, product_id: uuid.UUID, payload: ProductUpdate) -> Product:
     product = get_product_by_id(db, product_id)
 
     if payload.title is not None:
