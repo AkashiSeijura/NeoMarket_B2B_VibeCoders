@@ -214,6 +214,28 @@ class SellerProductRead(ProductRead):
     blocking_reason: dict[str, Any] | None = None
     field_reports: list[dict[str, Any]] = Field(default_factory=list)
 
+    @computed_field
+    @property
+    def slug(self) -> str:
+        value = re.sub(r"[^a-z0-9]+", "-", self.title.lower()).strip("-")
+        return f"{value or 'product'}-{self.id}"
+
+    @computed_field
+    @property
+    def blocking_reason_id(self) -> str | None:
+        if not self.blocking_reason:
+            return None
+        value = self.blocking_reason.get("id")
+        return str(value) if value is not None else None
+
+    @computed_field
+    @property
+    def moderator_comment(self) -> str | None:
+        if not self.blocking_reason:
+            return None
+        value = self.blocking_reason.get("comment")
+        return str(value) if value is not None else None
+
     @field_validator("field_reports", mode="before")
     @classmethod
     def default_field_reports(cls, value):

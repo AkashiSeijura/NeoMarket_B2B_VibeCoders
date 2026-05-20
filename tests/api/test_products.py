@@ -210,6 +210,9 @@ def test_get_moderated_product_returns_full_payload(
     assert body["description"] == product.description
     assert body["status"] == "MODERATED"
     assert body["deleted"] is False
+    assert body["slug"] == f"iphone-15-pro-max-{product.id}"
+    assert body["blocking_reason_id"] is None
+    assert body["moderator_comment"] is None
     assert body["blocked"] is False
     assert body["category"] == {"id": product.category.id, "name": product.category.name}
     assert body["images"][0]["id"]
@@ -220,17 +223,24 @@ def test_get_moderated_product_returns_full_payload(
     assert body["characteristics"][0]["value"] == "Apple"
     assert len(body["skus"]) == 1
     response_sku = body["skus"][0]
-    assert response_sku["id"] == sku.id
+    assert response_sku["id"] == str(sku.id)
+    assert response_sku["product_id"] == str(product.id)
     assert response_sku["name"] == "128GB Black"
     assert response_sku["price"] == 9999000
     assert response_sku["cost_price"] == 7000000
     assert response_sku["discount"] == 0
-    assert response_sku["image"] == "/s3/iphone15-black-128.jpg"
     assert response_sku["active_quantity"] == 10
+    assert response_sku["stock_quantity"] == 12
     assert response_sku["reserved_quantity"] == 2
+    assert response_sku["article"] is None
+    assert response_sku["images"][0]["id"] == f"sku-image:{sku.id}:0"
+    assert response_sku["images"][0]["url"] == "/s3/iphone15-black-128.jpg"
+    assert response_sku["images"][0]["ordering"] == 0
     assert response_sku["characteristics"][0]["id"]
     assert response_sku["characteristics"][0]["name"] == "Storage"
     assert response_sku["characteristics"][0]["value"] == "128GB"
+    assert response_sku["created_at"]
+    assert response_sku["updated_at"]
     assert body["blocking_reason"] is None
     assert body["field_reports"] == []
     assert "created_at" in body
@@ -268,6 +278,8 @@ def test_get_blocked_product_returns_blocking_reason_and_field_reports(
     body = response.json()
     assert body["status"] == "BLOCKED"
     assert body["blocked"] is True
+    assert body["blocking_reason_id"] == blocking_reason["id"]
+    assert body["moderator_comment"] == blocking_reason["comment"]
     assert body["blocking_reason"]["title"] == "Description does not match product"
     assert body["blocking_reason"] == blocking_reason
     assert body["field_reports"] == field_reports

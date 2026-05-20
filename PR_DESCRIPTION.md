@@ -237,6 +237,8 @@ When a valid `X-Service-Key` is present, the endpoint uses public B2C mode and d
 
 Seller and public detail responses preserve the accepted UUID-backed contract from US-B2B-01 and US-B2B-02: product, category, image, characteristic, and nested SKU ids are UUID values, nested SKU images are returned as `images[]`, and no integer-id response serialization is reintroduced. Public detail uses separate response schemas to omit seller-only fields, includes only in-stock public SKUs, maps public `stock_quantity` to `active_quantity`, and keeps `active_quantity` because the schema requires it.
 
+External arbiter contract fix: seller detail now includes ProductResponse-required top-level fields `slug`, `blocking_reason_id`, and `moderator_comment` while keeping the enriched `blocking_reason` and `field_reports` details for blocked products. Seller detail nested SKUs now include SKUResponse-required fields `product_id`, `stock_quantity`, `article`, `images`, `created_at`, and `updated_at` alongside seller-only `cost_price` and `reserved_quantity`. Seller SKU images are returned as `images[]` with stable synthetic response-only ids shaped as `sku-image:{sku.id}:0` because this codebase stores only one `skus.image` URL and has no SKU image table. The shared `ImageOut` and `CharacteristicOut` `id` fix is preserved, and the public view remains seller-data-safe by hiding `cost_price`, `reserved_quantity`, `blocking_reason`, and `field_reports`.
+
 # US-B2B-05 Validation
 
 Pytest proof commands:
