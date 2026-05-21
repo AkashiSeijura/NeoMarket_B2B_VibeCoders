@@ -121,12 +121,13 @@ def list_products_endpoint(
         else:
             products = list_public_products_by_ids(db, product_ids)
             total_count = len(products)
-        return ProductPublicPaginatedResponse(
+        public_response = ProductPublicPaginatedResponse(
             items=[ProductPublicShortRead.model_validate(product) for product in products],
             total_count=total_count,
             limit=bounded_limit,
             offset=bounded_offset,
         )
+        return JSONResponse(content=public_response.model_dump(mode="json"))
 
     current_seller = get_current_seller(token)
     if isinstance(current_seller, JSONResponse):
