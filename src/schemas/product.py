@@ -56,15 +56,18 @@ class ProductSKURead(APIModel):
     @classmethod
     def add_synthetic_images(cls, value: Any) -> Any:
         image = value.get("image") if isinstance(value, dict) else getattr(value, "image", None)
-        if not image:
-            return value
-
         sku_id = value.get("id") if isinstance(value, dict) else getattr(value, "id")
-        image_id = uuid.uuid5(SKU_IMAGE_NAMESPACE, f"sku-image:{sku_id}:0")
+        image_data = []
+        if image:
+            image_id = uuid.uuid5(SKU_IMAGE_NAMESPACE, f"sku-image:{sku_id}:0")
+            image_data = [{"id": image_id, "url": image, "ordering": 0}]
 
         if isinstance(value, dict):
             value = value.copy()
-            value.setdefault("images", [{"id": image_id, "url": image, "ordering": 0}])
+            if value.get("cost_price") is None:
+                value["cost_price"] = 0
+            if image:
+                value.setdefault("images", image_data)
             return value
 
         return {
@@ -73,12 +76,12 @@ class ProductSKURead(APIModel):
             "name": value.name,
             "price": value.price,
             "discount": getattr(value, "discount", 0),
-            "cost_price": getattr(value, "cost_price", 0),
+            "cost_price": getattr(value, "cost_price", None) or 0,
             "stock_quantity": getattr(value, "stock_quantity", 0),
             "active_quantity": value.active_quantity,
             "reserved_quantity": getattr(value, "reserved_quantity", 0),
             "article": getattr(value, "article", None),
-            "images": [{"id": image_id, "url": image, "ordering": 0}],
+            "images": image_data,
             "characteristics": getattr(value, "characteristics", []),
             "created_at": value.created_at,
             "updated_at": value.updated_at,

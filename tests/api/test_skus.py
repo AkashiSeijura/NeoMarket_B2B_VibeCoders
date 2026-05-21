@@ -1,4 +1,4 @@
-from uuid import NAMESPACE_URL, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 import httpx
 import pytest
@@ -60,9 +60,9 @@ def product_factory(db_session: Session, category_factory):
     return create_product
 
 
-def sku_payload(product_id: int, **overrides) -> dict:
+def sku_payload(product_id: UUID, **overrides) -> dict:
     payload = {
-        "product_id": product_id,
+        "product_id": str(product_id),
         "name": "256GB Black",
         "price": 12999000,
         "discount": 0,
@@ -108,8 +108,7 @@ def create_existing_sku(db_session: Session, product: Product) -> SKU:
 def assert_sku_image(body: dict, url: str) -> None:
     assert len(body["images"]) == 1
     image = body["images"][0]
-    assert image["id"]
-    assert image["id"].startswith("sku-image:")
+    UUID(image["id"])
     assert image["id"] != body["id"]
     assert image["url"] == url
     assert image["ordering"] == 0
@@ -168,7 +167,7 @@ def test_first_sku_emits_created_event_to_moderation(
     assert request["url"] == f"{settings.moderation_url}/api/v1/events/product"
     assert request["headers"]["X-Service-Key"] == settings.b2b_to_mod_key
     assert event["idempotency_key"] == str(uuid5(NAMESPACE_URL, f"product-created:{product.id}"))
-    assert event["product_id"] == product.id
+    assert event["product_id"] == str(product.id)
     assert event["seller_id"] == SELLER_ID
     assert event["event"] == "CREATED"
     assert event["date"]
@@ -227,7 +226,7 @@ def test_missing_images_and_cost_price_returns_201(
 ):
     product = product_factory()
     payload = {
-        "product_id": product.id,
+        "product_id": str(product.id),
         "name": "256GB Black",
         "price": 0,
     }
@@ -279,7 +278,7 @@ def test_legacy_image_field_still_accepted(
 ):
     product = product_factory()
     payload = {
-        "product_id": product.id,
+        "product_id": str(product.id),
         "name": "256GB Black",
         "price": 12999000,
         "cost_price": 9500000,
