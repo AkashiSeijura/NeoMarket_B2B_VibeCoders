@@ -109,7 +109,7 @@ def _apply_sku_updates(sku: SKU, payload: SKUUpdate) -> None:
         sku.characteristics = [SKUCharacteristic(name=item.name, value=item.value) for item in payload.characteristics]
 
 
-def update_sku(db: Session, sku_id: int, payload: SKUUpdate, seller_id: str) -> SKU:
+def update_sku(db: Session, sku_id: uuid.UUID, payload: SKUUpdate, seller_id: uuid.UUID) -> SKU:
     sku = _get_sku_or_raise(db, sku_id)
     product = sku.product
 
@@ -130,7 +130,7 @@ def update_sku(db: Session, sku_id: int, payload: SKUUpdate, seller_id: str) -> 
     db.flush()
     if should_send_moderation_event:
         try:
-            send_product_edited_event(product_id=product.id, seller_id=seller_id)
+            send_product_edited_event(product_id=str(product.id), seller_id=str(seller_id))
         except Exception as exc:
             db.rollback()
             raise ModerationUnavailableError("Moderation service unavailable") from exc

@@ -1,3 +1,5 @@
+import uuid
+
 from fastapi import APIRouter, Depends, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError as PydanticValidationError
@@ -63,7 +65,7 @@ async def _parse_sku_create_payload(request: Request) -> SKUCreate | JSONRespons
         return _invalid_request(_sku_validation_message(exc))
 
 
-async def _parse_sku_update_payload(request: Request, sku_id: int | None = None) -> SKUUpdate | JSONResponse:
+async def _parse_sku_update_payload(request: Request, sku_id: uuid.UUID | None = None) -> SKUUpdate | JSONResponse:
     try:
         body = await request.json()
     except ValueError:
@@ -116,7 +118,7 @@ async def create_sku_endpoint(
 
 @router.put("/{id}", response_model=SKURead, status_code=status.HTTP_200_OK)
 async def update_sku_by_id_endpoint(
-    id: int,
+    id: uuid.UUID,
     request: Request,
     current_seller: CurrentSeller | JSONResponse = Depends(get_current_seller),
     db: Session = Depends(get_db),
@@ -140,7 +142,7 @@ async def update_sku_by_id_endpoint(
 
 @router.patch("/{sku_id}", response_model=SKURead, status_code=status.HTTP_200_OK)
 async def patch_sku_endpoint(
-    sku_id: int,
+    sku_id: uuid.UUID,
     request: Request,
     current_seller: CurrentSeller | JSONResponse = Depends(get_current_seller),
     db: Session = Depends(get_db),

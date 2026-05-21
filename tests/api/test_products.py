@@ -380,7 +380,8 @@ def test_patch_product_response_includes_nested_sku_contract_fields(
     assert response_sku["active_quantity"] == 4
     assert response_sku["reserved_quantity"] == 3
     assert response_sku["article"] == "IPHONE15-BLACK-128"
-    assert response_sku["images"][0]["id"] == f"sku-image:{sku.id}:0"
+    UUID(response_sku["images"][0]["id"])
+    assert response_sku["images"][0]["id"] != str(sku.id)
     assert response_sku["images"][0]["url"] == "/s3/iphone15-black-128.jpg"
     assert response_sku["images"][0]["ordering"] == 0
     assert response_sku["created_at"]

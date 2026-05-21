@@ -354,7 +354,7 @@ def test_patch_moderated_product_returns_to_on_moderation(
     assert product.status == ProductStatus.ON_MODERATION
     assert len(moderation_requests) == 1
     event = moderation_requests[0]["json"]
-    assert event["product_id"] == product.id
+    assert event["product_id"] == str(product.id)
     assert event["seller_id"] == SELLER_ID
     assert event["event"] == "EDITED"
     assert event["idempotency_key"]

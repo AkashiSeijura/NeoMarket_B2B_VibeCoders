@@ -82,7 +82,7 @@ def update_product_endpoint(
 
 @router.patch("/{product_id}", response_model=ProductResponse, status_code=status.HTTP_200_OK)
 def patch_product_endpoint(
-    product_id: int,
+    product_id: uuid.UUID,
     payload: ProductUpdate,
     current_seller: CurrentSeller | JSONResponse = Depends(get_current_seller),
     db: Session = Depends(get_db),

@@ -88,13 +88,9 @@ class ProductSKURead(APIModel):
         }
 
 
-class ProductSKUImageOut(ImageOut):
-    id: str
-
-
 class ProductSKUResponse(APIModel):
-    id: int
-    product_id: int
+    id: uuid.UUID
+    product_id: uuid.UUID
     name: str
     price: int
     discount: int
@@ -114,20 +110,16 @@ class ProductSKUResponse(APIModel):
 
     @computed_field
     @property
-    def images(self) -> list[ProductSKUImageOut]:
+    def images(self) -> list[ImageOut]:
         if not self.image:
             return []
         return [
-            ProductSKUImageOut(
-                id=f"sku-image:{self.id}:0",
+            ImageOut(
+                id=uuid.uuid5(SKU_IMAGE_NAMESPACE, f"sku-image:{self.id}:0"),
                 url=self.image,
                 ordering=0,
             )
         ]
-
-    @field_serializer("id", "product_id")
-    def serialize_id(self, value: int) -> str:
-        return str(value)
 
 
 class ProductRead(APIModel):
