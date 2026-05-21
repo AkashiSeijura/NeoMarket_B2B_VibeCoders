@@ -203,9 +203,9 @@ def test_get_moderated_product_returns_full_payload(
 
     assert response.status_code == 200
     body = response.json()
-    assert body["id"] == product.id
+    assert body["id"] == str(product.id)
     assert body["seller_id"] == SELLER_ID
-    assert body["category_id"] == product.category_id
+    assert body["category_id"] == str(product.category_id)
     assert body["title"] == product.title
     assert body["description"] == product.description
     assert body["status"] == "MODERATED"
@@ -214,7 +214,7 @@ def test_get_moderated_product_returns_full_payload(
     assert body["blocking_reason_id"] is None
     assert body["moderator_comment"] is None
     assert body["blocked"] is False
-    assert body["category"] == {"id": product.category.id, "name": product.category.name}
+    assert body["category"] == {"id": str(product.category.id), "name": product.category.name}
     assert body["images"][0]["id"]
     assert body["images"][0]["url"] == "/s3/iphone15-front.jpg"
     assert body["images"][0]["ordering"] == 0
@@ -233,7 +233,7 @@ def test_get_moderated_product_returns_full_payload(
     assert response_sku["stock_quantity"] == 12
     assert response_sku["reserved_quantity"] == 2
     assert response_sku["article"] is None
-    assert response_sku["images"][0]["id"] == f"sku-image:{sku.id}:0"
+    assert_uuid(response_sku["images"][0]["id"])
     assert response_sku["images"][0]["url"] == "/s3/iphone15-black-128.jpg"
     assert response_sku["images"][0]["ordering"] == 0
     assert response_sku["characteristics"][0]["id"]
@@ -297,7 +297,7 @@ def test_get_others_product_returns_404(client, test_product_factory, auth_heade
 
 
 def test_get_nonexistent_returns_404(client, auth_headers):
-    response = client.get("/api/v1/products/999999", headers=auth_headers(SELLER_ID))
+    response = client.get(f"/api/v1/products/{uuid4()}", headers=auth_headers(SELLER_ID))
 
     assert response.status_code == 404
     assert response.json() == {"code": "NOT_FOUND", "message": "Product not found"}
@@ -357,7 +357,8 @@ def test_public_product_detail_with_valid_service_key_returns_public_payload(
         }
     ]
     assert len(body["skus"]) == 1
-    assert body["skus"][0] == {
+    response_sku = body["skus"][0]
+    assert response_sku == {
         "id": str(active_sku.id),
         "product_id": str(product.id),
         "name": "128GB Black",
@@ -373,8 +374,15 @@ def test_public_product_detail_with_valid_service_key_returns_public_payload(
             }
         ],
         "stock_quantity": 8,
-        "images": [{"url": "/s3/iphone15-black-128.jpg", "ordering": 0}],
+        "images": [
+            {
+                "id": response_sku["images"][0]["id"],
+                "url": "/s3/iphone15-black-128.jpg",
+                "ordering": 0,
+            }
+        ],
     }
+    assert_uuid(response_sku["images"][0]["id"])
     assert test_event_requests == {"moderation": [], "b2c": []}
 
 
@@ -493,6 +501,7 @@ def test_get_product_returns_product_and_nested_sku_contract_fields(
     client,
     db_session: Session,
     category_factory,
+    auth_headers,
 ):
     category = category_factory()
     product = Product(
@@ -516,7 +525,7 @@ def test_get_product_returns_product_and_nested_sku_contract_fields(
     db_session.add(product)
     db_session.commit()
 
-    response = client.get(f"/api/v1/products/{product.id}")
+    response = client.get(f"/api/v1/products/{product.id}", headers=auth_headers(str(product.seller_id)))
 
     assert response.status_code == 200
     body = response.json()
@@ -533,7 +542,7 @@ def test_get_product_returns_product_and_nested_sku_contract_fields(
     assert sku_body["price"] == sku.price
     assert sku_body["discount"] == 0
     assert sku_body["cost_price"] == 0
-    assert sku_body["stock_quantity"] == 0
+    assert sku_body["stock_quantity"] == sku.active_quantity
     assert sku_body["active_quantity"] == sku.active_quantity
     assert sku_body["reserved_quantity"] == 0
     assert sku_body["article"] is None

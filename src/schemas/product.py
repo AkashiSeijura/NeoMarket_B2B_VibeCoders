@@ -176,6 +176,7 @@ class SKUPublicRead(APIModel):
     def stock_quantity(self) -> int:
         return self.active_quantity
 
+
 class ProductRead(APIModel):
     id: uuid.UUID
     seller_id: uuid.UUID
@@ -199,6 +200,42 @@ class ProductRead(APIModel):
         value = re.sub(r"[^a-z0-9]+", "-", self.title.lower()).strip("-")
         return f"{value or 'product'}-{self.id}"
 
+    @model_validator(mode="before")
+    @classmethod
+    def add_blocking_summary(cls, value: Any) -> Any:
+        blocking_reason = value.get("blocking_reason") if isinstance(value, dict) else getattr(value, "blocking_reason", None)
+        if not blocking_reason:
+            return value
+
+        blocking_reason_id = blocking_reason.get("id")
+        moderator_comment = blocking_reason.get("comment")
+        if isinstance(value, dict):
+            value = value.copy()
+            value.setdefault("blocking_reason_id", str(blocking_reason_id) if blocking_reason_id is not None else None)
+            value.setdefault("moderator_comment", str(moderator_comment) if moderator_comment is not None else None)
+            return value
+
+        return {
+            "id": value.id,
+            "seller_id": value.seller_id,
+            "category_id": value.category_id,
+            "title": value.title,
+            "description": value.description,
+            "status": value.status,
+            "deleted": value.deleted,
+            "category": value.category,
+            "images": value.images,
+            "characteristics": value.characteristics,
+            "skus": value.skus,
+            "created_at": value.created_at,
+            "updated_at": value.updated_at,
+            "blocking_reason_id": str(blocking_reason_id) if blocking_reason_id is not None else None,
+            "moderator_comment": str(moderator_comment) if moderator_comment is not None else None,
+            "blocked": getattr(value, "blocked", False),
+            "blocking_reason": blocking_reason,
+            "field_reports": getattr(value, "field_reports", []),
+        }
+
 
 class ProductCreateRead(ProductRead):
     pass
@@ -213,28 +250,6 @@ class SellerProductRead(ProductRead):
     skus: list[SellerProductSKURead] = Field(default_factory=list)
     blocking_reason: dict[str, Any] | None = None
     field_reports: list[dict[str, Any]] = Field(default_factory=list)
-
-    @computed_field
-    @property
-    def slug(self) -> str:
-        value = re.sub(r"[^a-z0-9]+", "-", self.title.lower()).strip("-")
-        return f"{value or 'product'}-{self.id}"
-
-    @computed_field
-    @property
-    def blocking_reason_id(self) -> str | None:
-        if not self.blocking_reason:
-            return None
-        value = self.blocking_reason.get("id")
-        return str(value) if value is not None else None
-
-    @computed_field
-    @property
-    def moderator_comment(self) -> str | None:
-        if not self.blocking_reason:
-            return None
-        value = self.blocking_reason.get("comment")
-        return str(value) if value is not None else None
 
     @field_validator("field_reports", mode="before")
     @classmethod
