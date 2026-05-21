@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import uuid
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
@@ -23,7 +24,7 @@ def _get_invoice_or_raise(db: Session, invoice_id: int) -> Invoice:
     return invoice
 
 
-def create_invoice(db: Session, payload: InvoiceCreate, seller_id: str) -> Invoice:
+def create_invoice(db: Session, payload: InvoiceCreate, seller_id: uuid.UUID) -> Invoice:
     if not payload.items:
         raise ValidationError("At least one item is required")
     for item in payload.items:
@@ -49,7 +50,7 @@ def create_invoice(db: Session, payload: InvoiceCreate, seller_id: str) -> Invoi
         if product.deleted or product.status != ProductStatus.MODERATED:
             raise ValidationError("Invoice can only be created for MODERATED products")
 
-    invoice = Invoice(reference=payload.reference, seller_id=seller_id, status=InvoiceStatus.CREATED)
+    invoice = Invoice(reference=payload.reference, seller_id=str(seller_id), status=InvoiceStatus.CREATED)
     invoice.items = [InvoiceItem(sku_id=item.sku_id, quantity=item.quantity) for item in payload.items]
 
     db.add(invoice)

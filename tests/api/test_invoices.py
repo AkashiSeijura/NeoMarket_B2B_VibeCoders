@@ -64,6 +64,10 @@ def invoice_item_count(db_session: Session) -> int:
     return db_session.scalar(select(func.count(InvoiceItem.id))) or 0
 
 
+def sku_item(sku: SKU, quantity: int) -> dict[str, object]:
+    return {"sku_id": str(sku.id), "quantity": quantity}
+
+
 def test_create_invoice_with_moderated_sku_returns_201(
     client,
     db_session: Session,
@@ -77,7 +81,7 @@ def test_create_invoice_with_moderated_sku_returns_201(
         "/api/v1/invoices",
         json={
             "seller_id": OTHER_SELLER_ID,
-            "items": [{"sku_id": sku.id, "quantity": 10}],
+            "items": [sku_item(sku, 10)],
         },
         headers=auth_headers(SELLER_ID),
     )
@@ -90,7 +94,7 @@ def test_create_invoice_with_moderated_sku_returns_201(
     assert "created_at" in body
     assert body["items"] == [
         {
-            "sku_id": sku.id,
+            "sku_id": str(sku.id),
             "sku_name": "128GB Black",
             "quantity": 10,
             "accepted_quantity": None,
@@ -151,7 +155,7 @@ def test_non_moderated_sku_returns_400(
 
         response = client.post(
             "/api/v1/invoices",
-            json={"items": [{"sku_id": sku.id, "quantity": 10}]},
+            json={"items": [sku_item(sku, 10)]},
             headers=auth_headers(SELLER_ID),
         )
 
@@ -170,7 +174,7 @@ def test_non_moderated_sku_returns_400(
     deleted_sku = create_sku(db_session, deleted_product)
     response = client.post(
         "/api/v1/invoices",
-        json={"items": [{"sku_id": deleted_sku.id, "quantity": 10}]},
+        json={"items": [sku_item(deleted_sku, 10)]},
         headers=auth_headers(SELLER_ID),
     )
 
@@ -196,7 +200,7 @@ def test_others_sku_returns_403(
         "/api/v1/invoices",
         json={
             "seller_id": SELLER_ID,
-            "items": [{"sku_id": sku.id, "quantity": 10}],
+            "items": [sku_item(sku, 10)],
         },
         headers=auth_headers(OTHER_SELLER_ID),
     )
@@ -225,7 +229,7 @@ def test_quantity_must_be_positive_returns_400(
 
     response = client.post(
         "/api/v1/invoices",
-        json={"items": [{"sku_id": sku.id, "quantity": 0}]},
+        json={"items": [sku_item(sku, 0)]},
         headers=auth_headers(SELLER_ID),
     )
 
@@ -253,8 +257,8 @@ def test_invalid_mixed_items_do_not_create_partial_invoice(
         "/api/v1/invoices",
         json={
             "items": [
-                {"sku_id": valid_sku.id, "quantity": 4},
-                {"sku_id": invalid_sku.id, "quantity": 2},
+                sku_item(valid_sku, 4),
+                sku_item(invalid_sku, 2),
             ]
         },
         headers=auth_headers(SELLER_ID),
@@ -283,7 +287,7 @@ def test_accept_invoice_path_alias_accepts_invoice(
     sku = create_sku(db_session, product, active_quantity=4, reserved_quantity=1)
     create_response = client.post(
         "/api/v1/invoices",
-        json={"items": [{"sku_id": sku.id, "quantity": 6}]},
+        json={"items": [sku_item(sku, 6)]},
         headers=auth_headers(SELLER_ID),
     )
     invoice_id = create_response.json()["id"]
@@ -294,7 +298,7 @@ def test_accept_invoice_path_alias_accepts_invoice(
     body = response.json()
     assert body["id"] == invoice_id
     assert body["status"] == "ACCEPTED"
-    assert body["items"] == [{"skuId": sku.id, "quantity": 6}]
+    assert body["items"] == [{"skuId": str(sku.id), "quantity": 6}]
 
     db_session.expire_all()
     persisted_invoice = db_session.get(Invoice, invoice_id)
@@ -316,7 +320,7 @@ def test_legacy_accept_route_still_works(
     sku = create_sku(db_session, product, active_quantity=2, reserved_quantity=0)
     create_response = client.post(
         "/api/v1/invoices",
-        json={"items": [{"sku_id": sku.id, "quantity": 3}]},
+        json={"items": [sku_item(sku, 3)]},
         headers=auth_headers(SELLER_ID),
     )
     invoice_id = create_response.json()["id"]
