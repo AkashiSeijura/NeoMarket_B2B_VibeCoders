@@ -1,6 +1,7 @@
 import hashlib
 import json
 import logging
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
@@ -28,26 +29,29 @@ class UnreserveConflictError(Exception):
     pass
 
 
-def _normalized_items(items: list[dict[str, int]]) -> list[dict[str, int]]:
-    quantities_by_sku: dict[int, int] = {}
+def _normalized_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    quantities_by_sku: dict[uuid.UUID, int] = {}
     for item in items:
-        sku_id = int(item["sku_id"])
+        sku_id = item["sku_id"]
         quantities_by_sku[sku_id] = quantities_by_sku.get(sku_id, 0) + int(item["quantity"])
 
     return [
         {"sku_id": sku_id, "quantity": quantity}
-        for sku_id, quantity in sorted(quantities_by_sku.items())
+        for sku_id, quantity in sorted(quantities_by_sku.items(), key=lambda value: str(value[0]))
     ]
 
 
 def _normalized_reserve_payload(
     idempotency_key: str,
-    items: list[dict[str, int]],
+    items: list[dict[str, Any]],
     order_id: str | None = None,
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "idempotency_key": idempotency_key,
-        "items": _normalized_items(items),
+        "items": [
+            {"sku_id": str(item["sku_id"]), "quantity": item["quantity"]}
+            for item in items
+        ],
     }
     if order_id is not None:
         payload["order_id"] = order_id
@@ -85,7 +89,7 @@ def _cached_response_or_conflict(
     return operation.response
 
 
-def _lock_skus(db: Session, sku_ids: list[int]) -> dict[int, SKU]:
+def _lock_skus(db: Session, sku_ids: list[uuid.UUID]) -> dict[uuid.UUID, SKU]:
     skus = db.scalars(
         select(SKU)
         .options(selectinload(SKU.product))
@@ -101,7 +105,7 @@ def _is_visible_catalog_sku(sku: SKU | None) -> bool:
     return sku.product.status == ProductStatus.MODERATED and sku.product.deleted is False
 
 
-def _reserve_conflicts(items: list[dict[str, int]], sku_map: dict[int, SKU]) -> list[dict[str, Any]]:
+def _reserve_conflicts(items: list[dict[str, Any]], sku_map: dict[uuid.UUID, SKU]) -> list[dict[str, Any]]:
     failed_items: list[dict[str, Any]] = []
     for item in items:
         sku_id = item["sku_id"]
@@ -111,7 +115,7 @@ def _reserve_conflicts(items: list[dict[str, int]], sku_map: dict[int, SKU]) -> 
         if not _is_visible_catalog_sku(sku):
             failed_items.append(
                 {
-                    "sku_id": sku_id,
+                    "sku_id": str(sku_id),
                     "requested": requested,
                     "available": 0,
                     "reason": "OUT_OF_STOCK",
@@ -123,7 +127,7 @@ def _reserve_conflicts(items: list[dict[str, int]], sku_map: dict[int, SKU]) -> 
         if available < requested:
             failed_items.append(
                 {
-                    "sku_id": sku_id,
+                    "sku_id": str(sku_id),
                     "requested": requested,
                     "available": available,
                     "reason": "OUT_OF_STOCK" if available == 0 else "INSUFFICIENT_STOCK",
@@ -136,11 +140,11 @@ def _reserve_conflicts(items: list[dict[str, int]], sku_map: dict[int, SKU]) -> 
 def reserve_skus(
     db: Session,
     idempotency_key: str,
-    items: list[dict[str, int]],
+    items: list[dict[str, Any]],
     order_id: str | None = None,
 ) -> dict[str, Any]:
-    normalized_payload = _normalized_reserve_payload(idempotency_key, items, order_id)
-    normalized_items = normalized_payload["items"]
+    normalized_items = _normalized_items(items)
+    normalized_payload = _normalized_reserve_payload(idempotency_key, normalized_items, order_id)
     request_hash = _request_hash(normalized_payload)
 
     existing_operation = db.get(ReserveOperation, idempotency_key)
@@ -171,8 +175,8 @@ def reserve_skus(
         db.rollback()
         raise ReservationConflictError({"reserved": False, "failed_items": failed_items})
 
-    out_of_stock_events: list[tuple[int, int]] = []
-    response_items: list[dict[str, int]] = []
+    out_of_stock_events: list[tuple[uuid.UUID, uuid.UUID]] = []
+    response_items: list[dict[str, Any]] = []
     for item in normalized_items:
         sku = sku_map[item["sku_id"]]
         quantity = item["quantity"]
@@ -182,7 +186,7 @@ def reserve_skus(
             out_of_stock_events.append((sku.product_id, sku.id))
         response_items.append(
             {
-                "sku_id": sku.id,
+                "sku_id": str(sku.id),
                 "reserved_quantity": quantity,
                 "remaining_stock": sku.active_quantity,
             }
@@ -211,7 +215,7 @@ def reserve_skus(
 
 def unreserve_skus(
     db: Session,
-    items: list[dict[str, int]],
+    items: list[dict[str, Any]],
     order_id: str | None = None,
 ) -> dict[str, Any]:
     normalized_items = _normalized_items(items)

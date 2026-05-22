@@ -1,4 +1,5 @@
 from typing import Any
+import uuid
 
 from fastapi import APIRouter, Depends, Header, Request, status
 from fastapi.responses import JSONResponse
@@ -55,26 +56,30 @@ async def _json_body(request: Request) -> dict[str, Any] | JSONResponse:
     return body
 
 
-def _parse_item(raw_item: Any) -> dict[str, int] | JSONResponse:
+def _parse_item(raw_item: Any) -> dict[str, Any] | JSONResponse:
     if not isinstance(raw_item, dict):
         return _invalid_request("Invalid reservation item")
 
-    sku_id = raw_item.get("sku_id")
+    raw_sku_id = raw_item.get("sku_id")
     quantity = raw_item.get("quantity")
-    if not isinstance(sku_id, int) or isinstance(sku_id, bool) or sku_id <= 0:
-        return _invalid_request("sku_id must be a positive integer")
+    if not isinstance(raw_sku_id, str):
+        return _invalid_request("sku_id must be a valid UUID")
+    try:
+        sku_id = uuid.UUID(raw_sku_id)
+    except ValueError:
+        return _invalid_request("sku_id must be a valid UUID")
     if not isinstance(quantity, int) or isinstance(quantity, bool) or quantity <= 0:
         return _invalid_request("quantity must be > 0")
 
     return {"sku_id": sku_id, "quantity": quantity}
 
 
-def _parse_items(body: dict[str, Any]) -> list[dict[str, int]] | JSONResponse:
+def _parse_items(body: dict[str, Any]) -> list[dict[str, Any]] | JSONResponse:
     raw_items = body.get("items")
     if not isinstance(raw_items, list) or not raw_items:
         return _invalid_request("At least one item is required")
 
-    items: list[dict[str, int]] = []
+    items: list[dict[str, Any]] = []
     for raw_item in raw_items:
         item = _parse_item(raw_item)
         if isinstance(item, JSONResponse):
@@ -94,7 +99,7 @@ async def _parse_reserve_payload(
     request: Request,
     *,
     require_order_id: bool = False,
-) -> tuple[str, list[dict[str, int]]] | tuple[str, str, list[dict[str, int]]] | JSONResponse:
+) -> tuple[str, list[dict[str, Any]]] | tuple[str, str, list[dict[str, Any]]] | JSONResponse:
     body = await _json_body(request)
     if isinstance(body, JSONResponse):
         return body
@@ -114,7 +119,7 @@ async def _parse_reserve_payload(
     return idempotency_key.strip(), items
 
 
-async def _parse_unreserve_payload(request: Request) -> tuple[str, list[dict[str, int]]] | JSONResponse:
+async def _parse_unreserve_payload(request: Request) -> tuple[str, list[dict[str, Any]]] | JSONResponse:
     body = await _json_body(request)
     if isinstance(body, JSONResponse):
         return body

@@ -408,7 +408,7 @@ Decision: only `limit` and `offset` are active for `GET /api/v1/public/products`
 
 Migrated US-B2B-08 reserve/unreserve to the canonical inventory routes from `flow/openapi.yaml`. This matches the previously reviewed `neomarket-b2b.yaml` inventory reserve/unreserve contract.
 
-Added `POST /api/v1/inventory/reserve` and `POST /api/v1/inventory/unreserve`, both authenticated only by `X-Service-Key == settings.b2c_to_b2b_key`. Seller JWTs are not accepted as a substitute. Reserve validates `idempotency_key`, `order_id`, non-empty `items`, positive integer `sku_id`, and `quantity > 0`; unreserve validates `order_id`, non-empty `items`, positive integer `sku_id`, and `quantity > 0`.
+Added `POST /api/v1/inventory/reserve` and `POST /api/v1/inventory/unreserve`, both authenticated only by `X-Service-Key == settings.b2c_to_b2b_key`. Seller JWTs are not accepted as a substitute. Reserve validates `idempotency_key`, `order_id`, non-empty `items`, UUID-format `sku_id`, and `quantity > 0`; unreserve validates `order_id`, non-empty `items`, UUID-format `sku_id`, and `quantity > 0`.
 
 Kept `POST /api/v1/reserve` and `POST /api/v1/unreserve` as legacy compatibility routes with their original response shapes.
 
@@ -446,7 +446,7 @@ Required scenario results:
 Suite results:
 
 - `tests/api/test_reservations.py`: 18 passed
-- `tests/api/test_products.py tests/api/test_skus.py tests/api/test_invoices.py tests/api/test_reservations.py`: 71 passed
+- `tests/api/test_products.py tests/api/test_skus.py tests/api/test_invoices.py tests/api/test_reservations.py`: 75 passed
 
 # ADR: Inventory OpenAPI Migration Strategy
 
@@ -457,3 +457,9 @@ Options considered:
 - Add persistent unreserve replay storage: rejected for this migration because it would require a new order-operation model beyond US-B2B-08 and is explicitly deferred.
 
 Decision: add `POST /api/v1/inventory/reserve` and `POST /api/v1/inventory/unreserve` as canonical wrappers over the existing reservation service. Canonical reserve passes `order_id` into the normalized idempotency hash and derives `reserved_at` from `ReserveOperation.created_at`; legacy reserve omits `order_id` and keeps its cached response. Canonical unreserve returns the OpenAPI response shape but does not add persistent replay.
+
+# ADR: Reservation UUID Request Boundary
+
+After the UUID migration, reservation HTTP request bodies must carry `sku_id` as JSON strings because real clients cannot send Python `uuid.UUID` objects. The route parses those strings into `uuid.UUID` instances for service and SQLAlchemy lookups, while cached reservation payloads, API responses, failed items, and B2C event payloads serialize UUID identifiers back to strings at the JSON boundary.
+
+Decision: keep reservation lookup and schema types UUID-aware, remove integer SKU parsing from reserve/unreserve normalization, and update reservation tests to send `str(sku.id)` in all JSON payloads. Reservation business logic, idempotency rules, all-or-nothing stock behavior, and legacy/canonical route behavior are unchanged.

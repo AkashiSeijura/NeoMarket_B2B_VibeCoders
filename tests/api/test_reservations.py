@@ -1,5 +1,5 @@
 from datetime import datetime
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -71,10 +71,18 @@ def reserve_operation_count(db_session: Session) -> int:
     return db_session.scalar(select(func.count(ReserveOperation.idempotency_key))) or 0
 
 
+def json_sku_id(sku: SKU) -> str:
+    return str(sku.id)
+
+
+def sort_by_sku_id(items: list[dict]) -> list[dict]:
+    return sorted(items, key=lambda item: item["sku_id"])
+
+
 def reserve_payload(idempotency_key: str, sku: SKU, quantity: int = 2) -> dict:
     return {
         "idempotency_key": idempotency_key,
-        "items": [{"sku_id": sku.id, "quantity": quantity}],
+        "items": [{"sku_id": json_sku_id(sku), "quantity": quantity}],
     }
 
 
@@ -82,20 +90,20 @@ def inventory_reserve_payload(order_id: str, idempotency_key: str, sku: SKU, qua
     return {
         "idempotency_key": idempotency_key,
         "order_id": order_id,
-        "items": [{"sku_id": sku.id, "quantity": quantity}],
+        "items": [{"sku_id": json_sku_id(sku), "quantity": quantity}],
     }
 
 
 def unreserve_payload(order_id: str, sku: SKU, quantity: int = 2) -> dict:
     return {
         "order_id": order_id,
-        "items": [{"sku_id": sku.id, "quantity": quantity}],
+        "items": [{"sku_id": json_sku_id(sku), "quantity": quantity}],
     }
 
 
 def assert_sku_quantities(
     db_session: Session,
-    sku_id: int,
+    sku_id: UUID,
     *,
     active_quantity: int,
     reserved_quantity: int,
@@ -122,8 +130,8 @@ def test_reserve_all_skus_succeeds(client, db_session: Session, category_factory
         json={
             "idempotency_key": "reserve-all-skus",
             "items": [
-                {"sku_id": first_sku.id, "quantity": 2},
-                {"sku_id": second_sku.id, "quantity": 1},
+                {"sku_id": json_sku_id(first_sku), "quantity": 2},
+                {"sku_id": json_sku_id(second_sku), "quantity": 1},
             ],
         },
         headers=service_headers(),
@@ -132,10 +140,10 @@ def test_reserve_all_skus_succeeds(client, db_session: Session, category_factory
     assert response.status_code == 200
     assert response.json() == {
         "reserved": True,
-        "items": [
-            {"sku_id": first_sku.id, "reserved_quantity": 2, "remaining_stock": 3},
-            {"sku_id": second_sku.id, "reserved_quantity": 1, "remaining_stock": 2},
-        ],
+        "items": sort_by_sku_id([
+            {"sku_id": json_sku_id(first_sku), "reserved_quantity": 2, "remaining_stock": 3},
+            {"sku_id": json_sku_id(second_sku), "reserved_quantity": 1, "remaining_stock": 2},
+        ]),
     }
     assert_sku_quantities(db_session, first_sku.id, active_quantity=3, reserved_quantity=3)
     assert_sku_quantities(db_session, second_sku.id, active_quantity=2, reserved_quantity=1)
@@ -239,8 +247,8 @@ def test_inventory_reserve_conflict_returns_error_with_failed_items_details_and_
             "idempotency_key": str(uuid4()),
             "order_id": str(uuid4()),
             "items": [
-                {"sku_id": enough_sku.id, "quantity": 2},
-                {"sku_id": low_sku.id, "quantity": 2},
+                {"sku_id": json_sku_id(enough_sku), "quantity": 2},
+                {"sku_id": json_sku_id(low_sku), "quantity": 2},
             ],
         },
         headers=service_headers(),
@@ -253,7 +261,7 @@ def test_inventory_reserve_conflict_returns_error_with_failed_items_details_and_
         "details": {
             "failed_items": [
                 {
-                    "sku_id": low_sku.id,
+                    "sku_id": json_sku_id(low_sku),
                     "requested": 2,
                     "available": 1,
                     "reason": "INSUFFICIENT_STOCK",
@@ -307,7 +315,7 @@ def test_legacy_reserve_and_unreserve_routes_keep_response_shapes(
     assert reserve_response.status_code == 200
     assert reserve_response.json() == {
         "reserved": True,
-        "items": [{"sku_id": sku.id, "reserved_quantity": 2, "remaining_stock": 3}],
+        "items": [{"sku_id": json_sku_id(sku), "reserved_quantity": 2, "remaining_stock": 3}],
     }
     assert unreserve_response.status_code == 200
     assert unreserve_response.json() == {"ok": True}
@@ -328,8 +336,8 @@ def test_partial_insufficient_stock_returns_409_all_rollback(
         json={
             "idempotency_key": "partial-insufficient",
             "items": [
-                {"sku_id": enough_sku.id, "quantity": 2},
-                {"sku_id": low_sku.id, "quantity": 2},
+                {"sku_id": json_sku_id(enough_sku), "quantity": 2},
+                {"sku_id": json_sku_id(low_sku), "quantity": 2},
             ],
         },
         headers=service_headers(),
@@ -340,7 +348,7 @@ def test_partial_insufficient_stock_returns_409_all_rollback(
         "reserved": False,
         "failed_items": [
             {
-                "sku_id": low_sku.id,
+                "sku_id": json_sku_id(low_sku),
                 "requested": 2,
                 "available": 1,
                 "reason": "INSUFFICIENT_STOCK",
@@ -408,8 +416,8 @@ def test_sku_out_of_stock_event_emitted(
     assert request["timeout"] == settings.b2c_timeout_seconds
     assert request["json"]["idempotency_key"] == "sku-out-of-stock"
     assert request["json"]["event"] == "SKU_OUT_OF_STOCK"
-    assert request["json"]["product_id"] == product.id
-    assert request["json"]["sku_id"] == sku.id
+    assert request["json"]["product_id"] == str(product.id)
+    assert request["json"]["sku_id"] == json_sku_id(sku)
     assert request["json"]["date"]
 
 
@@ -437,15 +445,15 @@ def test_hidden_deleted_and_missing_skus_return_out_of_stock(
     deleted_product = create_product(db_session, category_factory, deleted=True)
     hidden_sku = create_sku(db_session, hidden_product, active_quantity=7, reserved_quantity=0)
     deleted_sku = create_sku(db_session, deleted_product, active_quantity=8, reserved_quantity=0)
-    missing_sku_id = 999999
+    missing_sku_id = str(uuid4())
 
     response = client.post(
         "/api/v1/reserve",
         json={
             "idempotency_key": "hidden-and-missing",
             "items": [
-                {"sku_id": hidden_sku.id, "quantity": 1},
-                {"sku_id": deleted_sku.id, "quantity": 1},
+                {"sku_id": json_sku_id(hidden_sku), "quantity": 1},
+                {"sku_id": json_sku_id(deleted_sku), "quantity": 1},
                 {"sku_id": missing_sku_id, "quantity": 1},
             ],
         },
@@ -453,28 +461,29 @@ def test_hidden_deleted_and_missing_skus_return_out_of_stock(
     )
 
     assert response.status_code == 409
+    expected_failed_items = [
+        {
+            "sku_id": json_sku_id(hidden_sku),
+            "requested": 1,
+            "available": 0,
+            "reason": "OUT_OF_STOCK",
+        },
+        {
+            "sku_id": json_sku_id(deleted_sku),
+            "requested": 1,
+            "available": 0,
+            "reason": "OUT_OF_STOCK",
+        },
+        {
+            "sku_id": missing_sku_id,
+            "requested": 1,
+            "available": 0,
+            "reason": "OUT_OF_STOCK",
+        },
+    ]
     assert response.json() == {
         "reserved": False,
-        "failed_items": [
-            {
-                "sku_id": hidden_sku.id,
-                "requested": 1,
-                "available": 0,
-                "reason": "OUT_OF_STOCK",
-            },
-            {
-                "sku_id": deleted_sku.id,
-                "requested": 1,
-                "available": 0,
-                "reason": "OUT_OF_STOCK",
-            },
-            {
-                "sku_id": missing_sku_id,
-                "requested": 1,
-                "available": 0,
-                "reason": "OUT_OF_STOCK",
-            },
-        ],
+        "failed_items": sort_by_sku_id(expected_failed_items),
     }
     assert_sku_quantities(db_session, hidden_sku.id, active_quantity=7, reserved_quantity=0)
     assert_sku_quantities(db_session, deleted_sku.id, active_quantity=8, reserved_quantity=0)
@@ -530,8 +539,8 @@ def test_reserve_rollback_does_not_emit_sku_out_of_stock(
         json={
             "idempotency_key": "rollback-no-event",
             "items": [
-                {"sku_id": enough_sku.id, "quantity": 1},
-                {"sku_id": low_sku.id, "quantity": 2},
+                {"sku_id": json_sku_id(enough_sku), "quantity": 1},
+                {"sku_id": json_sku_id(low_sku), "quantity": 2},
             ],
         },
         headers=service_headers(),

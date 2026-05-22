@@ -1,4 +1,5 @@
 from datetime import datetime
+import uuid
 
 from pydantic import Field
 
@@ -6,7 +7,7 @@ from src.schemas.common import APIModel
 
 
 class ReservationItemRead(APIModel):
-    sku_id: int
+    sku_id: uuid.UUID
     reserved_quantity: int
     remaining_stock: int
 
@@ -17,7 +18,7 @@ class ReservationRead(APIModel):
 
 
 class FailedReservationItemRead(APIModel):
-    sku_id: int
+    sku_id: uuid.UUID
     requested: int
     available: int
     reason: str
