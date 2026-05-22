@@ -330,17 +330,13 @@ class SellerProductListItemRead(APIModel):
     title: str
     slug: str
     status: str
-    category_id: int
+    category_id: uuid.UUID
     deleted: bool
     min_price: int | None = None
     cover_image: str | None = None
     skus_count: int
     total_active_quantity: int
     created_at: datetime
-
-    @field_serializer("id", "category_id")
-    def serialize_id(self, value: int) -> str:
-        return str(value)
 
 
 class ProductListRead(APIModel):

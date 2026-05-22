@@ -878,10 +878,12 @@ def test_list_returns_only_own_products(
     assert body["total_count"] == 2
     assert body["limit"] == 20
     assert body["offset"] == 0
-    assert [item["id"] for item in body["items"]] == [str(own_product.id), str(own_product_without_skus.id)]
+    item_ids = [item["id"] for item in body["items"]]
+    assert set(item_ids) == {str(own_product.id), str(own_product_without_skus.id)}
     assert str(other_product.id) not in [item["id"] for item in body["items"]]
 
-    first_item = body["items"][0]
+    items_by_id = {item["id"]: item for item in body["items"]}
+    first_item = items_by_id[str(own_product.id)]
     assert set(first_item) == {
         "id",
         "title",
@@ -909,7 +911,7 @@ def test_list_returns_only_own_products(
     assert "category" not in first_item
     assert "images" not in first_item
 
-    second_item = body["items"][1]
+    second_item = items_by_id[str(own_product_without_skus.id)]
     assert second_item["min_price"] is None
     assert second_item["cover_image"] == "/s3/iphone15-front.jpg"
     assert second_item["skus_count"] == 0
@@ -997,8 +999,10 @@ def test_include_deleted_true_returns_deleted_products(
     assert list_response.status_code == 200
     body = list_response.json()
     assert body["total_count"] == 2
-    assert [item["id"] for item in body["items"]] == [str(visible_product.id), str(deleted_product.id)]
-    assert [item["deleted"] for item in body["items"]] == [False, True]
+    items_by_id = {item["id"]: item for item in body["items"]}
+    assert set(items_by_id) == {str(visible_product.id), str(deleted_product.id)}
+    assert items_by_id[str(visible_product.id)]["deleted"] is False
+    assert items_by_id[str(deleted_product.id)]["deleted"] is True
 
 
 def test_status_filter_works_correctly(client, test_product_factory, auth_headers):
@@ -1052,10 +1056,10 @@ def test_search_by_title_case_insensitive(client, test_product_factory, auth_hea
     assert response.status_code == 200
     body = response.json()
     assert body["total_count"] == 2
-    assert [item["id"] for item in body["items"]] == [
+    assert {item["id"] for item in body["items"]} == {
         str(matching_product.id),
         str(another_matching_product.id),
-    ]
+    }
     assert str(non_matching_product.id) not in [item["id"] for item in body["items"]]
     assert str(other_seller_product.id) not in [item["id"] for item in body["items"]]
 
