@@ -581,7 +581,6 @@ Options considered:
 - Replace `/api/v1/events/moderation`: rejected because the existing B2B flow and tests still cover that compatibility route and its `200` response body.
 - Convert moderation event boundaries to UUID strings after the UUID migration: selected. Real HTTP clients send UUIDs as strings, while the route/service keep internal lookups UUID-aware.
 
-<<<<<<< HEAD
 Decision: keep the moderation business behavior stable and perform OpenAPI migration at the route/schema boundary. The canonical route normalizes request fields into the existing service payload, returns bodyless `204` responses, and preserves existing idempotency conflict behavior.
 
 # ADR: Moderation UUID Request Boundary
@@ -589,8 +588,6 @@ Decision: keep the moderation business behavior stable and perform OpenAPI migra
 After the UUID migration, moderation HTTP request bodies must carry `product_id` as JSON strings because real clients cannot send Python `uuid.UUID` objects. Both moderation routes parse those strings into `uuid.UUID` instances for service and SQLAlchemy lookups, while processed-event JSON payloads, cached responses, legacy route responses, and B2C `PRODUCT_BLOCKED` events serialize product identifiers back to strings at the JSON boundary.
 
 Decision: keep moderation schemas and persistence UUID-aware, remove integer product ID parsing from moderation event routes, and update moderation tests to send `str(product.id)` in all JSON payloads. Moderation status transitions, idempotency behavior, service-key authentication, and B2C event behavior are unchanged.
-=======
-Decision: keep the service model stable and perform OpenAPI migration at the route/schema boundary. The canonical route normalizes request fields into the existing service payload, returns bodyless `204` responses, and preserves existing idempotency conflict behavior.
 
 ---
 
@@ -608,12 +605,12 @@ The request shape follows the canonical flow field names:
 {
   "order_id": "order-id",
   "items": [
-    {"sku_id": 1, "quantity": 2}
+    {"sku_id": "0fbd7d25-6f5b-4c3c-8c0e-78be4d56c1cc", "quantity": 2}
   ]
 }
 ```
 
-Route-local validation requires `order_id`, a non-empty `items` list, positive integer `sku_id`, and `quantity > 0`, returning canonical `400 INVALID_REQUEST` errors instead of FastAPI `422`. The OpenAPI examples show UUID-shaped IDs, but this service currently uses integer SKU primary keys consistently with reserve/unreserve, so fulfill keeps integer `sku_id`.
+Route-local validation requires `order_id`, a non-empty `items` list, UUID-format string `sku_id`, and `quantity > 0`, returning canonical `400 INVALID_REQUEST` errors instead of FastAPI `422`. The route parses JSON string SKU ids into internal `uuid.UUID` values for service and SQLAlchemy lookups.
 
 Fulfill finalizes an existing delivered order/reservation by decreasing `reserved_quantity` only:
 
@@ -640,6 +637,7 @@ No US-B2B-11+ behavior is included: no seller list migration and no SKU delete b
 Pytest proof command:
 
 ```powershell
+python -m pytest tests/api/test_fulfillment.py -vv
 python -m pytest tests/api/test_products.py tests/api/test_skus.py tests/api/test_invoices.py tests/api/test_reservations.py tests/api/test_moderation_events.py tests/api/test_fulfillment.py -vv
 ```
 
@@ -665,7 +663,7 @@ Suite results:
 
 - `tests/api/test_fulfillment.py`: 12 passed
 - Required US-B2B-10 OpenAPI migration scenarios: 4 passed
-- `tests/api/test_products.py tests/api/test_skus.py tests/api/test_invoices.py tests/api/test_reservations.py tests/api/test_moderation_events.py tests/api/test_fulfillment.py`: 99 passed
+- `tests/api/test_products.py tests/api/test_skus.py tests/api/test_invoices.py tests/api/test_reservations.py tests/api/test_moderation_events.py tests/api/test_fulfillment.py`: 103 passed
 
 # ADR: Fulfill Idempotency by Order ID
 
@@ -676,4 +674,9 @@ Options considered:
 - Checking `reserved_quantity` only: lowest implementation complexity, but not true idempotency. It cannot distinguish a legitimate retry from a conflicting request and can produce false success or double-deduction risk under concurrent/retried calls.
 
 Decision: use a persisted `fulfilled_orders` table. The service claims `order_id`, locks all requested SKUs with `SELECT FOR UPDATE` where supported, validates all items, deducts `reserved_quantity`, stores the cached success response, and commits in one transaction. Validation and stock conflicts roll back the idempotency row and stock changes, so failed fulfill attempts are not replay-cached.
->>>>>>> 3a98afa (Implement US-B2B-10 fulfillment)
+
+# ADR: Fulfillment UUID Request Boundary
+
+After the UUID migration, fulfillment HTTP request bodies must carry `sku_id` as JSON strings because real clients cannot send Python `uuid.UUID` objects. Both canonical `/api/v1/inventory/fulfill` and legacy `/api/v1/fulfill` parse those strings into `uuid.UUID` instances for service and SQLAlchemy lookups, while persisted idempotency payloads serialize SKU identifiers back to strings.
+
+Decision: keep fulfillment schemas, routing, and service logic UUID-aware, remove integer SKU parsing from fulfill normalization, and update fulfillment tests to send `str(sku.id)` in all JSON payloads. Fulfillment idempotency, service-key authentication, reserved stock deduction, active stock behavior, and all-or-nothing rollback behavior are unchanged.

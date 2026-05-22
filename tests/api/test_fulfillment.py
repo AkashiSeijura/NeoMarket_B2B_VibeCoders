@@ -1,3 +1,5 @@
+from uuid import UUID
+
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -55,13 +57,13 @@ def create_sku(
 def fulfill_payload(order_id: str, sku: SKU, quantity: int = 2) -> dict:
     return {
         "order_id": order_id,
-        "items": [{"sku_id": sku.id, "quantity": quantity}],
+        "items": [{"sku_id": str(sku.id), "quantity": quantity}],
     }
 
 
 def assert_sku_quantities(
     db_session: Session,
-    sku_id: int,
+    sku_id: UUID,
     *,
     active_quantity: int,
     reserved_quantity: int,
@@ -270,8 +272,8 @@ def test_insufficient_reserved_quantity_rolls_back_all_items(
         json={
             "order_id": "order-insufficient-reserve",
             "items": [
-                {"sku_id": enough_sku.id, "quantity": 2},
-                {"sku_id": low_sku.id, "quantity": 2},
+                {"sku_id": str(enough_sku.id), "quantity": 2},
+                {"sku_id": str(low_sku.id), "quantity": 2},
             ],
         },
         headers=service_headers(),

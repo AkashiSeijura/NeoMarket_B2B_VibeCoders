@@ -1,5 +1,6 @@
 import hashlib
 import json
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
@@ -18,22 +19,25 @@ class FulfillmentIdempotencyConflictError(Exception):
     pass
 
 
-def _normalized_items(items: list[dict[str, int]]) -> list[dict[str, int]]:
-    quantities_by_sku: dict[int, int] = {}
+def _normalized_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    quantities_by_sku: dict[uuid.UUID, int] = {}
     for item in items:
-        sku_id = int(item["sku_id"])
+        sku_id = item["sku_id"]
         quantities_by_sku[sku_id] = quantities_by_sku.get(sku_id, 0) + int(item["quantity"])
 
     return [
         {"sku_id": sku_id, "quantity": quantity}
-        for sku_id, quantity in sorted(quantities_by_sku.items())
+        for sku_id, quantity in sorted(quantities_by_sku.items(), key=lambda value: str(value[0]))
     ]
 
 
-def _normalized_payload(order_id: str, items: list[dict[str, int]]) -> dict[str, Any]:
+def _normalized_payload(order_id: str, normalized_items: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "order_id": order_id,
-        "items": _normalized_items(items),
+        "items": [
+            {"sku_id": str(item["sku_id"]), "quantity": item["quantity"]}
+            for item in normalized_items
+        ],
     }
 
 
@@ -71,7 +75,7 @@ def _cached_response_or_conflict(
     return operation.response
 
 
-def _lock_skus(db: Session, sku_ids: list[int]) -> dict[int, SKU]:
+def _lock_skus(db: Session, sku_ids: list[uuid.UUID]) -> dict[uuid.UUID, SKU]:
     skus = db.scalars(select(SKU).where(SKU.id.in_(sku_ids)).with_for_update()).all()
     return {sku.id: sku for sku in skus}
 
@@ -79,12 +83,12 @@ def _lock_skus(db: Session, sku_ids: list[int]) -> dict[int, SKU]:
 def fulfill_skus(
     db: Session,
     order_id: str,
-    items: list[dict[str, int]],
+    items: list[dict[str, Any]],
     *,
     canonical: bool = False,
 ) -> dict[str, Any]:
-    normalized_payload = _normalized_payload(order_id, items)
-    normalized_items = normalized_payload["items"]
+    normalized_items = _normalized_items(items)
+    normalized_payload = _normalized_payload(order_id, normalized_items)
     request_hash = _request_hash(normalized_payload)
 
     existing_operation = db.get(FulfilledOrder, order_id)
