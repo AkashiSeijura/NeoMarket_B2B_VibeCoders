@@ -1,5 +1,6 @@
 from datetime import datetime
 from typing import Any, Literal
+import uuid
 
 from pydantic import Field
 
@@ -18,7 +19,7 @@ class ModerationFieldReport(APIModel):
 
 class CanonicalModerationEventRequest(APIModel):
     idempotency_key: str
-    product_id: str
+    product_id: uuid.UUID
     event_type: CanonicalModerationEventType
     occurred_at: datetime
     moderator_id: str | None = None
@@ -30,7 +31,7 @@ class CanonicalModerationEventRequest(APIModel):
 
 class ModerationEventRead(APIModel):
     ok: bool
-    product_id: int
+    product_id: uuid.UUID
     status: ModerationEventStatus
 
 

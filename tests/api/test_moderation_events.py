@@ -1,3 +1,5 @@
+from uuid import UUID, uuid4
+
 import httpx
 import pytest
 from sqlalchemy import select
@@ -73,10 +75,11 @@ def moderation_headers() -> dict[str, str]:
     return {"X-Service-Key": settings.moderation_to_b2b_key}
 
 
-def blocked_payload(product_id: int, **overrides) -> dict:
+def blocked_payload(product_id: UUID, **overrides) -> dict:
+    product_id_str = str(product_id)
     payload = {
-        "idempotency_key": f"moderation-event-{product_id}",
-        "product_id": product_id,
+        "idempotency_key": f"moderation-event-{product_id_str}",
+        "product_id": product_id_str,
         "status": "BLOCKED",
         "hard_block": False,
         "blocking_reason": {
@@ -96,10 +99,11 @@ def blocked_payload(product_id: int, **overrides) -> dict:
     return payload
 
 
-def canonical_moderated_payload(internal_product_id: int, **overrides) -> dict:
+def canonical_moderated_payload(existing_product_id: UUID, **overrides) -> dict:
+    product_id_str = str(existing_product_id)
     payload = {
-        "idempotency_key": f"canonical-moderated-{internal_product_id}",
-        "product_id": str(internal_product_id),
+        "idempotency_key": f"canonical-moderated-{product_id_str}",
+        "product_id": product_id_str,
         "event_type": "MODERATED",
         "occurred_at": "2026-05-17T10:00:00Z",
     }
@@ -107,10 +111,11 @@ def canonical_moderated_payload(internal_product_id: int, **overrides) -> dict:
     return payload
 
 
-def canonical_blocked_payload(internal_product_id: int, **overrides) -> dict:
+def canonical_blocked_payload(existing_product_id: UUID, **overrides) -> dict:
+    product_id_str = str(existing_product_id)
     payload = {
-        "idempotency_key": f"canonical-blocked-{internal_product_id}",
-        "product_id": str(internal_product_id),
+        "idempotency_key": f"canonical-blocked-{product_id_str}",
+        "product_id": product_id_str,
         "event_type": "BLOCKED",
         "occurred_at": "2026-05-17T10:00:00Z",
         "moderator_id": "9f5e6a86-7d7f-4b68-9493-11983abf4311",
@@ -179,7 +184,7 @@ def test_canonical_blocked_soft_returns_204_saves_field_reports_and_emits_b2c(
     assert b2c_requests[0]["headers"]["X-Service-Key"] == settings.b2b_to_b2c_key
     assert event["event"] == "PRODUCT_BLOCKED"
     assert event["idempotency_key"] == payload["idempotency_key"]
-    assert event["product_id"] == product.id
+    assert event["product_id"] == str(product.id)
 
 
 def test_canonical_blocked_hard_returns_204_sets_terminal_status(
@@ -286,7 +291,7 @@ def test_canonical_payload_validation_returns_400(client, product_factory, b2c_r
 
     invalid_product_id_response = client.post(
         "/api/v1/moderation/events",
-        json=canonical_moderated_payload(product.id, product_id="0"),
+        json=canonical_moderated_payload(product.id, product_id="not-a-uuid"),
         headers=moderation_headers(),
     )
     invalid_event_type_response = client.post(
@@ -308,7 +313,7 @@ def test_canonical_payload_validation_returns_400(client, product_factory, b2c_r
     assert invalid_product_id_response.status_code == 400
     assert invalid_product_id_response.json() == {
         "code": "INVALID_REQUEST",
-        "message": "product_id must be a positive decimal string",
+        "message": "product_id must be a valid UUID",
     }
     assert invalid_event_type_response.status_code == 400
     assert invalid_event_type_response.json() == {
@@ -340,7 +345,7 @@ def test_legacy_moderation_event_route_still_returns_200_body(
     response = client.post("/api/v1/events/moderation", json=payload, headers=moderation_headers())
 
     assert response.status_code == 200
-    assert response.json() == {"ok": True, "product_id": product.id, "status": "BLOCKED"}
+    assert response.json() == {"ok": True, "product_id": str(product.id), "status": "BLOCKED"}
     db_session.refresh(product)
     assert product.status == ProductStatus.BLOCKED
     assert product.blocking_reason == payload["blocking_reason"]
@@ -361,14 +366,14 @@ def test_moderated_event_clears_blocking_data(
     )
     payload = {
         "idempotency_key": "moderated-event-1",
-        "product_id": product.id,
+        "product_id": str(product.id),
         "status": "MODERATED",
     }
 
     response = client.post("/api/v1/events/moderation", json=payload, headers=moderation_headers())
 
     assert response.status_code == 200
-    assert response.json() == {"ok": True, "product_id": product.id, "status": "MODERATED"}
+    assert response.json() == {"ok": True, "product_id": str(product.id), "status": "MODERATED"}
     db_session.refresh(product)
     assert product.status == ProductStatus.MODERATED
     assert product.blocking_reason is None
@@ -388,7 +393,7 @@ def test_blocked_soft_saves_field_reports(
     response = client.post("/api/v1/events/moderation", json=payload, headers=moderation_headers())
 
     assert response.status_code == 200
-    assert response.json() == {"ok": True, "product_id": product.id, "status": "BLOCKED"}
+    assert response.json() == {"ok": True, "product_id": str(product.id), "status": "BLOCKED"}
     db_session.refresh(product)
     assert product.status == ProductStatus.BLOCKED
     assert product.blocking_reason == payload["blocking_reason"]
@@ -399,7 +404,7 @@ def test_blocked_soft_saves_field_reports(
     assert b2c_requests[0]["headers"]["X-Service-Key"] == settings.b2b_to_b2c_key
     assert event["event"] == "PRODUCT_BLOCKED"
     assert event["idempotency_key"] == payload["idempotency_key"]
-    assert event["product_id"] == product.id
+    assert event["product_id"] == str(product.id)
     assert event["date"]
 
 
@@ -415,7 +420,7 @@ def test_blocked_hard_sets_terminal_status(
     response = client.post("/api/v1/events/moderation", json=payload, headers=moderation_headers())
 
     assert response.status_code == 200
-    assert response.json() == {"ok": True, "product_id": product.id, "status": "HARD_BLOCKED"}
+    assert response.json() == {"ok": True, "product_id": str(product.id), "status": "HARD_BLOCKED"}
     db_session.refresh(product)
     assert product.status == ProductStatus.HARD_BLOCKED
     assert product.blocking_reason == payload["blocking_reason"]
@@ -537,7 +542,7 @@ def test_blocked_payload_validation_returns_400(client, product_factory, b2c_req
         "/api/v1/events/moderation",
         json={
             "idempotency_key": "missing-field-reports",
-            "product_id": product.id,
+            "product_id": str(product.id),
             "status": "BLOCKED",
             "hard_block": False,
             "blocking_reason": {"title": "Blocked"},
@@ -555,7 +560,7 @@ def test_missing_product_returns_404(client, b2c_requests):
         "/api/v1/events/moderation",
         json={
             "idempotency_key": "missing-product-event",
-            "product_id": 999999,
+            "product_id": str(uuid4()),
             "status": "MODERATED",
         },
         headers=moderation_headers(),

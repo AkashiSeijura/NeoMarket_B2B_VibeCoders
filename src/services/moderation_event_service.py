@@ -1,6 +1,7 @@
 import hashlib
 import json
 import logging
+import uuid
 from typing import Any
 
 from sqlalchemy.exc import IntegrityError
@@ -17,8 +18,18 @@ class ModerationEventIdempotencyConflictError(Exception):
     pass
 
 
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, uuid.UUID):
+        return str(value)
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    return value
+
+
 def _request_hash(payload: dict[str, Any]) -> str:
-    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    raw = json.dumps(_json_safe(payload), sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
@@ -52,6 +63,7 @@ def _apply_moderation_decision(product: Product, payload: dict[str, Any]) -> Pro
 
 def apply_moderation_event(db: Session, payload: dict[str, Any]) -> dict[str, Any]:
     request_hash = _request_hash(payload)
+    stored_payload = _json_safe(payload)
 
     existing_event = db.get(ProcessedModerationEvent, payload["idempotency_key"])
     if existing_event is not None:
@@ -61,7 +73,7 @@ def apply_moderation_event(db: Session, payload: dict[str, Any]) -> dict[str, An
         idempotency_key=payload["idempotency_key"],
         product_id=payload["product_id"],
         request_hash=request_hash,
-        request_payload=payload,
+        request_payload=stored_payload,
         response={},
     )
     db.add(processed_event)
@@ -85,7 +97,7 @@ def apply_moderation_event(db: Session, payload: dict[str, Any]) -> dict[str, An
     resulting_status = _apply_moderation_decision(product, payload)
     response: dict[str, Any] = {
         "ok": True,
-        "product_id": product.id,
+        "product_id": str(product.id),
         "status": resulting_status.value,
     }
     processed_event.response = response

@@ -1,3 +1,4 @@
+import uuid
 from datetime import datetime
 from typing import Any
 
@@ -52,9 +53,9 @@ async def _parse_moderation_event_payload(request: Request) -> dict[str, Any] | 
     if not isinstance(idempotency_key, str) or not idempotency_key.strip():
         return _invalid_request("idempotency_key is required")
 
-    product_id = body.get("product_id")
-    if not isinstance(product_id, int) or isinstance(product_id, bool) or product_id <= 0:
-        return _invalid_request("product_id must be a positive integer")
+    product_id = _parse_product_id(body.get("product_id"))
+    if isinstance(product_id, JSONResponse):
+        return product_id
 
     event_status = body.get("status")
     if event_status not in {"MODERATED", "BLOCKED"}:
@@ -90,16 +91,13 @@ async def _parse_moderation_event_payload(request: Request) -> dict[str, Any] | 
     return payload
 
 
-def _parse_positive_decimal_product_id(value: Any) -> int | JSONResponse:
-    if not isinstance(value, str) or not value:
-        return _invalid_request("product_id must be a positive decimal string")
-    if any(char < "0" or char > "9" for char in value):
-        return _invalid_request("product_id must be a positive decimal string")
-
-    product_id = int(value)
-    if product_id <= 0:
-        return _invalid_request("product_id must be a positive decimal string")
-    return product_id
+def _parse_product_id(value: Any) -> uuid.UUID | JSONResponse:
+    if not isinstance(value, str) or not value.strip():
+        return _invalid_request("product_id must be a valid UUID")
+    try:
+        return uuid.UUID(value.strip())
+    except ValueError:
+        return _invalid_request("product_id must be a valid UUID")
 
 
 def _parse_optional_string(body: dict[str, Any], field_name: str) -> str | None | JSONResponse:
@@ -166,7 +164,7 @@ async def _parse_canonical_moderation_event_payload(request: Request) -> dict[st
     if not isinstance(idempotency_key, str) or not idempotency_key.strip():
         return _invalid_request("idempotency_key is required")
 
-    product_id = _parse_positive_decimal_product_id(body.get("product_id"))
+    product_id = _parse_product_id(body.get("product_id"))
     if isinstance(product_id, JSONResponse):
         return product_id
 

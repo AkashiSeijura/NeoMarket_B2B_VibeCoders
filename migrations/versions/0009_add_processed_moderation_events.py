@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy.dialects import postgresql
 
 
 revision = "0009_add_processed_moderation_events"
@@ -16,7 +17,7 @@ def upgrade() -> None:
     op.create_table(
         "processed_moderation_events",
         sa.Column("idempotency_key", sa.String(length=255), nullable=False),
-        sa.Column("product_id", sa.Integer(), nullable=False),
+        sa.Column("product_id", postgresql.UUID(as_uuid=True), nullable=False),
         sa.Column("request_hash", sa.String(length=64), nullable=False),
         sa.Column("request_payload", sa.JSON(), nullable=False),
         sa.Column("response", sa.JSON(), nullable=False),

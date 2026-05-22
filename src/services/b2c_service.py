@@ -84,12 +84,12 @@ def send_sku_out_of_stock_event(
 def build_product_blocked_event(
     *,
     idempotency_key: str,
-    product_id: int,
-) -> dict[str, str | int]:
+    product_id: JsonId,
+) -> dict[str, str]:
     return {
         "idempotency_key": idempotency_key,
         "event": "PRODUCT_BLOCKED",
-        "product_id": product_id,
+        "product_id": str(product_id),
         "date": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
     }
 
@@ -97,7 +97,7 @@ def build_product_blocked_event(
 def send_product_blocked_event(
     *,
     idempotency_key: str,
-    product_id: int,
+    product_id: JsonId,
 ) -> None:
     url = f"{settings.b2c_url.rstrip('/')}/api/v1/events/product"
     headers = {"X-Service-Key": settings.b2b_to_b2c_key}
