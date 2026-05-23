@@ -17,6 +17,9 @@ class Settings(BaseSettings):
 
     jwt_secret_key: str = "dev-secret"
     jwt_algorithm: str = "HS256"
+    moderation_url: str = "http://moderation:8000"
+    b2b_to_mod_key: str = "dev-b2b-to-moderation-key"
+    moderation_timeout_seconds: float = 3.0
 
     model_config = SettingsConfigDict(
         env_file=".env",
