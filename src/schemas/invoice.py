@@ -1,4 +1,5 @@
 from datetime import datetime
+import uuid
 
 from pydantic import AliasChoices, Field
 
@@ -6,7 +7,7 @@ from src.schemas.common import APIModel
 
 
 class InvoiceItemCreate(APIModel):
-    sku_id: int = Field(validation_alias=AliasChoices("sku_id", "skuId"))
+    sku_id: uuid.UUID = Field(validation_alias=AliasChoices("sku_id", "skuId"))
     quantity: int = Field(gt=0)
 
 
@@ -20,7 +21,7 @@ class InvoiceAccept(APIModel):
 
 
 class InvoiceItemRead(APIModel):
-    sku_id: int = Field(serialization_alias="skuId")
+    sku_id: uuid.UUID = Field(serialization_alias="skuId")
     quantity: int
 
 

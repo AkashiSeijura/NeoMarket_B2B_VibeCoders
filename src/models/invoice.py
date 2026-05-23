@@ -1,9 +1,11 @@
 from datetime import datetime
 from enum import Enum
+import uuid
 
 from sqlalchemy import DateTime, Enum as SqlEnum, ForeignKey, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from src.db.types import GUID
 from src.models.base import Base
 
 
@@ -43,7 +45,7 @@ class InvoiceItem(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     invoice_id: Mapped[int] = mapped_column(ForeignKey("invoices.id", ondelete="CASCADE"))
-    sku_id: Mapped[int] = mapped_column(ForeignKey("skus.id", ondelete="RESTRICT"))
+    sku_id: Mapped[uuid.UUID] = mapped_column(GUID(), ForeignKey("skus.id", ondelete="RESTRICT"))
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
 
     invoice = relationship("Invoice", back_populates="items")

@@ -1,16 +1,18 @@
 from datetime import datetime
+import uuid
 
 from sqlalchemy import DateTime, ForeignKey, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from src.db.types import GUID
 from src.models.base import Base
 
 
 class SKU(Base):
     __tablename__ = "skus"
 
-    id: Mapped[int] = mapped_column(primary_key=True)
-    product_id: Mapped[int] = mapped_column(ForeignKey("products.id", ondelete="CASCADE"))
+    id: Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=uuid.uuid4)
+    product_id: Mapped[uuid.UUID] = mapped_column(GUID(), ForeignKey("products.id", ondelete="CASCADE"))
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     price: Mapped[int] = mapped_column(Integer, nullable=False)
     active_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
@@ -38,8 +40,8 @@ class SKU(Base):
 class SKUCharacteristic(Base):
     __tablename__ = "sku_characteristics"
 
-    id: Mapped[int] = mapped_column(primary_key=True)
-    sku_id: Mapped[int] = mapped_column(ForeignKey("skus.id", ondelete="CASCADE"))
+    id: Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=uuid.uuid4)
+    sku_id: Mapped[uuid.UUID] = mapped_column(GUID(), ForeignKey("skus.id", ondelete="CASCADE"))
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     value: Mapped[str] = mapped_column(String(255), nullable=False)
 

@@ -1,3 +1,5 @@
+import uuid
+
 from pydantic import BaseModel, ConfigDict
 
 
@@ -10,7 +12,7 @@ class APIModel(BaseModel):
 
 
 class CategoryOut(APIModel):
-    id: int
+    id: uuid.UUID
     name: str
 
 
@@ -20,7 +22,7 @@ class ImagePayload(APIModel):
 
 
 class ImageOut(ImagePayload):
-    pass
+    id: uuid.UUID
 
 
 class CharacteristicPayload(APIModel):
@@ -29,5 +31,5 @@ class CharacteristicPayload(APIModel):
 
 
 class CharacteristicOut(CharacteristicPayload):
-    pass
+    id: uuid.UUID
 

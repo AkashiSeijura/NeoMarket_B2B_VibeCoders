@@ -1,9 +1,18 @@
+import uuid
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from src.models import Category, Product, ProductCharacteristic, ProductImage, SKU
+from src.models import Category, Product, ProductCharacteristic, ProductImage, ProductStatus, SKU
 from src.schemas.product import ProductCreate, ProductUpdate
 from src.services.errors import NotFoundError
+
+
+class ProductCreateValidationError(Exception):
+    def __init__(self, field: str, message: str) -> None:
+        self.field = field
+        self.message = message
+        super().__init__(message)
 
 
 def _product_query():
@@ -18,27 +27,33 @@ def _product_query():
     )
 
 
-def _get_category_or_raise(db: Session, category_id: int) -> Category:
+def _get_category_or_raise(db: Session, category_id: uuid.UUID) -> Category:
     category = db.get(Category, category_id)
     if category is None:
         raise NotFoundError(f"Category with id={category_id} not found")
     return category
 
 
-def get_product_by_id(db: Session, product_id: int) -> Product:
+def get_product_by_id(db: Session, product_id: uuid.UUID) -> Product:
     product = db.scalars(_product_query().where(Product.id == product_id)).first()
     if product is None:
         raise NotFoundError(f"Product with id={product_id} not found")
     return product
 
 
-def create_product(db: Session, payload: ProductCreate) -> Product:
-    _get_category_or_raise(db, payload.category_id)
+def create_product(db: Session, payload: ProductCreate, seller_id: uuid.UUID) -> Product:
+    if not payload.images:
+        raise ProductCreateValidationError("images", "At least one image is required")
+
+    if db.get(Category, payload.category_id) is None:
+        raise ProductCreateValidationError("category_id", "Category not found")
 
     product = Product(
         title=payload.title,
         description=payload.description,
         category_id=payload.category_id,
+        seller_id=seller_id,
+        status=ProductStatus.CREATED,
     )
     product.images = [ProductImage(url=image.url, ordering=image.ordering) for image in payload.images]
     product.characteristics = [
@@ -50,7 +65,7 @@ def create_product(db: Session, payload: ProductCreate) -> Product:
     return get_product_by_id(db, product.id)
 
 
-def update_product(db: Session, product_id: int, payload: ProductUpdate) -> Product:
+def update_product(db: Session, product_id: uuid.UUID, payload: ProductUpdate) -> Product:
     product = get_product_by_id(db, product_id)
 
     if payload.title is not None:

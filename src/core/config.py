@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     db_password: str = "postgres"
     db_echo: bool = False
 
+    jwt_secret_key: str = "dev-secret"
+    jwt_algorithm: str = "HS256"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
