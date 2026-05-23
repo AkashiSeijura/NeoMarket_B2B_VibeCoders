@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session, selectinload
 from src.models import Category, Product, ProductCharacteristic, ProductImage, ProductStatus, SKU
 from src.schemas.product import ProductCreate, ProductUpdate
 from src.services.errors import NotFoundError
+from src.services.moderation_service import send_product_edited_event
 
 
 class ProductCreateValidationError(Exception):
@@ -13,6 +14,18 @@ class ProductCreateValidationError(Exception):
         self.field = field
         self.message = message
         super().__init__(message)
+
+
+class ProductForbiddenError(Exception):
+    pass
+
+
+class ProductOwnerError(Exception):
+    pass
+
+
+class ModerationUnavailableError(Exception):
+    pass
 
 
 def _product_query():
@@ -65,9 +78,7 @@ def create_product(db: Session, payload: ProductCreate, seller_id: uuid.UUID) ->
     return get_product_by_id(db, product.id)
 
 
-def update_product(db: Session, product_id: uuid.UUID, payload: ProductUpdate) -> Product:
-    product = get_product_by_id(db, product_id)
-
+def _apply_product_updates(db: Session, product: Product, payload: ProductUpdate) -> None:
     if payload.title is not None:
         product.title = payload.title
     if payload.description is not None:
@@ -81,6 +92,32 @@ def update_product(db: Session, product_id: uuid.UUID, payload: ProductUpdate) -
         product.characteristics = [
             ProductCharacteristic(name=item.name, value=item.value) for item in payload.characteristics
         ]
+
+
+def update_product(db: Session, product_id: uuid.UUID, payload: ProductUpdate, seller_id: uuid.UUID) -> Product:
+    product = get_product_by_id(db, product_id)
+
+    if product.seller_id != seller_id:
+        raise ProductOwnerError("Product does not belong to the authenticated seller")
+    if product.status == ProductStatus.HARD_BLOCKED:
+        raise ProductForbiddenError("Cannot edit hard-blocked product")
+
+    should_send_moderation_event = product.status in {
+        ProductStatus.MODERATED,
+        ProductStatus.BLOCKED,
+    }
+
+    _apply_product_updates(db, product, payload)
+    if should_send_moderation_event:
+        product.status = ProductStatus.ON_MODERATION
+
+    db.flush()
+    if should_send_moderation_event:
+        try:
+            send_product_edited_event(product_id=str(product.id), seller_id=str(seller_id))
+        except Exception as exc:
+            db.rollback()
+            raise ModerationUnavailableError("Moderation service unavailable") from exc
 
     db.commit()
     return get_product_by_id(db, product_id)
