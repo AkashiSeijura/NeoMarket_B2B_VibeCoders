@@ -129,6 +129,7 @@ class ProductRead(APIModel):
     title: str
     description: str
     status: str
+    deleted: bool
     category: CategoryOut
     images: list[ImageOut] = Field(default_factory=list)
     characteristics: list[CharacteristicOut] = Field(default_factory=list)
@@ -152,4 +153,11 @@ class ProductCreateRead(ProductRead):
 
 class ProductResponse(ProductCreateRead):
     skus: list[ProductSKUResponse] = Field(default_factory=list)
+
+
+class ProductListRead(APIModel):
+    items: list[ProductRead]
+    total_count: int
+    limit: int
+    offset: int
 
