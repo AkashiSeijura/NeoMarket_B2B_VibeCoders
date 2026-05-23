@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     moderation_timeout_seconds: float = 3.0
     b2c_url: str = "http://b2c:8000"
     b2b_to_b2c_key: str = "dev-b2b-to-b2c-key"
+    b2c_to_b2b_key: str = "dev-b2c-to-b2b-key"
     b2c_timeout_seconds: float = 3.0
 
     model_config = SettingsConfigDict(
