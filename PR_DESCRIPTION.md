@@ -42,7 +42,7 @@ Implemented `POST /api/v1/skus` for B2B SKU creation on top of US-B2B-01 and mig
 
 The SKU endpoint authenticates the seller from JWT claims, verifies that the parent product belongs to that seller, rejects `HARD_BLOCKED` products, and requires only `product_id`, `name`, and `price` in the create request. `cost_price` is optional and nullable, `article` is accepted and returned, and `images[]` is accepted by mapping `images[0].url` to the existing single `skus.image` column. Legacy `image` payloads are still accepted for old clients.
 
-The create response keeps DB IDs as integers internally but serializes SKU `id` and `product_id` as strings at the API boundary. It also returns `article`, `images[]`, `stock_quantity`, `created_at`, and `updated_at` where the existing storage model can support them safely. For the first SKU on a `CREATED` product, the product transitions to `ON_MODERATION` and sends exactly one Moderation `CREATED` event. Additional SKUs on products already in moderation do not send events or change state.
+После принятого UUID root fix ответ создания SKU использует UUID-backed `id` и `product_id` без stringification integer ID на границе ответа. Ответ также возвращает `article`, `images[]`, `stock_quantity`, `created_at` и `updated_at`, где текущая storage model поддерживает эти поля безопасно. Для первого SKU у продукта в статусе `CREATED` продукт переходит в `ON_MODERATION` и отправляет ровно одно событие Moderation `CREATED`. Дополнительные SKU у продуктов, которые уже находятся на модерации, не отправляют события и не меняют статус.
 
 External arbiter response-contract fix: the shared `ImageOut` and `CharacteristicOut` schemas include `id`. SKU characteristics return their persisted row ids. SKU images use a response-boundary synthetic id shaped as `sku-image:{sku.id}:0` because this codebase stores only one `skus.image` URL and has no SKU image table. No DB migration for SKU images is introduced.
 
@@ -161,3 +161,65 @@ Options considered:
 - Add PATCH as canonical and keep PUT as compatibility: aligns new clients with the authoritative flow while avoiding an unnecessary breaking change.
 
 Decision: add canonical `PATCH /api/v1/products/{product_id}` and `PATCH /api/v1/skus/{sku_id}` routes that reuse the existing edit services, while keeping the PUT routes as compatibility aliases. SKU `article` is included in update because it is an existing stored SKU field and part of the create/read contract. SKU `images[]` update remains out of scope because image-management endpoints are modeled separately.
+
+---
+
+# US-B2B-04: мягкое удаление продукта
+
+Реализовано мягкое удаление для `DELETE /api/v1/products/{product_id}` поверх принятых исправлений US-B2B-01, US-B2B-02 и US-B2B-03. Этот раздел остаётся stacked-изменением до слияния предыдущих срезов.
+
+Эндпоинт берёт продавца только из JWT claims, отклоняет удаление товара другого продавца с `403 NOT_OWNER`, отклоняет повторное удаление уже удалённого товара с `400 INVALID_REQUEST` и помечает товар `deleted=true`. Физическое удаление продукта, SKU, изображений, характеристик, инвойсов и исторических данных не выполняется. Успешное удаление соответствует `flow/neomarket-b2b.yaml`: возвращается ровно `204 No Content` с пустым телом ответа, без `200 {"ok": true}`.
+
+Добавлены колонка продукта `deleted` и миграция `0005_add_product_deleted.py`. Минимальный список товаров продавца `GET /api/v1/products` использует только JWT seller identity и не возвращает товары с `deleted=true`; query-параметры вроде `seller_id` не используются для определения владельца.
+
+После фикса accepted US-B2B-01/02 идентификаторы SKU являются UUID-backed. При отправке события `PRODUCT_DELETED` поле `sku_ids` содержит UUID-строки SKU. В исходящих событиях удаления `product_id` и `seller_id` также передаются как UUID-строки, когда эти поля присутствуют в payload.
+
+После коммита мягкого удаления сервис best-effort отправляет два каскадных события: событие `DELETED` в Moderation и событие `PRODUCT_DELETED` в B2C. Moderation получает `POST {moderation_url}/api/v1/events/product` с `X-Service-Key: {b2b_to_mod_key}` и полями `idempotency_key`, `product_id`, `seller_id`, `event=DELETED`, `date`. B2C получает `POST {b2c_url}/api/v1/events/product` с `X-Service-Key: {b2b_to_b2c_key}` и полями `idempotency_key`, `event=PRODUCT_DELETED`, `product_id`, `sku_ids`, `date`.
+
+Канонический flow требует UUID idempotency keys, но не задаёт семантику генерации; для событий удаления используются свежие UUIDv4.
+
+# Проверка US-B2B-04
+
+Команда проверки pytest:
+
+```powershell
+python -m pytest tests/api/test_products.py tests/api/test_skus.py -vv
+```
+
+Результаты обязательных сценариев:
+
+- `test_delete_sets_deleted_true`: passed
+- `test_delete_emits_event_to_moderation`: passed
+- `test_delete_emits_product_deleted_to_b2c`: passed
+- `test_delete_already_deleted_returns_400`: passed
+- `test_delete_others_product_returns_403`: passed
+- `test_deleted_product_not_in_seller_list`: passed
+
+Результаты набора:
+
+- Обязательные сценарии US-B2B-04: 6 passed
+- `tests/api/test_products.py tests/api/test_skus.py`: 31 passed
+
+Старые тесты, заменённые контрактом `flow/neomarket-b2b.yaml`:
+
+- Успешное удаление продукта больше не возвращает `200 {"ok": true}`.
+- Успешное удаление продукта проверяет `204 No Content` и пустое тело ответа.
+
+# ADR: источник контракта удаления продукта
+
+Рассмотренные варианты:
+
+- Оставить старый success response из `flow/b2b-flows.md`: сохраняет первую реализацию US-B2B-04, но конфликтует с authoritative same-path контрактом.
+- Следовать `flow/neomarket-b2b.yaml`: меняет только HTTP-контракт успешного ответа, сохраняя существующую бизнес-логику удаления и side effects.
+
+Решение: same-path конфликты разрешаются в пользу `flow/neomarket-b2b.yaml`. `DELETE /api/v1/products/{product_id}` возвращает `204 No Content` при успехе и не возвращает `{"ok": true}`.
+
+# ADR: доставка событий удаления продукта
+
+Рассмотренные варианты:
+
+- Два синхронных `POST` до commit: позволяют откатить БД, если сервис недоступен, но создают внешнюю частичную рассинхронизацию, если первый сервис получил событие, а второй упал до rollback.
+- Outbox для обоих событий: даёт лучшую консистентность и retry-модель, но требует новую таблицу, dispatcher, monitoring и retry-семантику вне объёма этой задачи.
+- Синхронная Moderation плюс outbox или fire-and-forget для B2C: уменьшает один failure mode, но создаёт смешанные гарантии доставки и всё равно требует инфраструктуру для одной стороны.
+
+Решение: сначала фиксировать мягкое удаление, затем синхронно пытаться отправить оба каскадных события в best-effort режиме и логировать ошибки. Если Moderation или B2C недоступны, B2B остаётся в состоянии `deleted=true`, а пропущенное внешнее событие считается документированной first-iteration inconsistency. Retry и reconciliation должны перейти на outbox в будущем срезе.

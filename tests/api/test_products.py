@@ -3,15 +3,20 @@ from uuid import UUID, uuid4
 import pytest
 from sqlalchemy.orm import Session
 
+from src.core.config import settings
 from src.models import Product, ProductCharacteristic, ProductImage, ProductStatus, SKU, SKUCharacteristic
 
 
 SELLER_ID = "c3d4e5f6-a7b8-9012-cdef-123456789012"
 
 
-class FakeModerationResponse:
+class FakeEventResponse:
     def raise_for_status(self) -> None:
         return None
+
+
+def assert_uuid(value: str) -> None:
+    UUID(value)
 
 
 @pytest.fixture()
@@ -27,9 +32,29 @@ def moderation_requests(monkeypatch):
                 "timeout": timeout,
             }
         )
-        return FakeModerationResponse()
+        return FakeEventResponse()
 
     monkeypatch.setattr("src.services.moderation_service.httpx.post", fake_post)
+    return requests
+
+
+@pytest.fixture()
+def test_event_requests(monkeypatch):
+    requests = {"moderation": [], "b2c": []}
+
+    def fake_post(url, json, headers, timeout):
+        target = "b2c" if url.startswith(settings.b2c_url) else "moderation"
+        requests[target].append(
+            {
+                "url": url,
+                "json": json,
+                "headers": headers,
+                "timeout": timeout,
+            }
+        )
+        return FakeEventResponse()
+
+    monkeypatch.setattr("httpx.post", fake_post)
     return requests
 
 
@@ -39,6 +64,7 @@ def product_factory(db_session: Session, category_factory):
         *,
         seller_id: str = SELLER_ID,
         status: ProductStatus = ProductStatus.CREATED,
+        deleted: bool = False,
     ) -> Product:
         category = category_factory()
         product = Product(
@@ -47,6 +73,7 @@ def product_factory(db_session: Session, category_factory):
             seller_id=seller_id,
             category_id=category.id,
             status=status,
+            deleted=deleted,
         )
         product.images = [ProductImage(url="/s3/iphone15-front.jpg", ordering=0)]
         product.characteristics = [ProductCharacteristic(name="Brand", value="Apple")]
@@ -56,6 +83,11 @@ def product_factory(db_session: Session, category_factory):
         return product
 
     return create_product
+
+
+@pytest.fixture()
+def test_product_factory(product_factory):
+    return product_factory
 
 
 def _assert_validation_error(response):
@@ -111,6 +143,7 @@ def test_create_product_returns_201_with_created_status(client, category_factory
     assert body["category_id"] == str(category.id)
     assert body["category"]["id"] == str(category.id)
     assert body["status"] == "CREATED"
+    assert body["deleted"] is False
     assert body["skus"] == []
     assert body["images"][0]["id"]
     assert body["images"][0]["url"] == payload["images"][0]["url"]
@@ -390,3 +423,139 @@ def test_patch_product_response_includes_nested_sku_contract_fields(
     assert response_sku["characteristics"][0]["name"] == "Color"
     assert response_sku["characteristics"][0]["value"] == "Black"
     assert moderation_requests == []
+
+
+def test_delete_sets_deleted_true(
+    client,
+    db_session: Session,
+    test_product_factory,
+    auth_headers,
+    test_event_requests,
+):
+    product = test_product_factory()
+
+    response = client.delete(f"/api/v1/products/{product.id}", headers=auth_headers(SELLER_ID))
+
+    assert response.status_code == 204
+    assert response.content == b""
+    db_session.refresh(product)
+    assert product.deleted is True
+
+
+def test_delete_emits_event_to_moderation(
+    client,
+    test_product_factory,
+    auth_headers,
+    test_event_requests,
+):
+    product = test_product_factory()
+
+    response = client.delete(f"/api/v1/products/{product.id}", headers=auth_headers(SELLER_ID))
+
+    assert response.status_code == 204
+    assert response.content == b""
+    assert len(test_event_requests["moderation"]) == 1
+    request = test_event_requests["moderation"][0]
+    event = request["json"]
+    assert request["url"] == f"{settings.moderation_url}/api/v1/events/product"
+    assert request["headers"]["X-Service-Key"] == settings.b2b_to_mod_key
+    assert event["product_id"] == str(product.id)
+    assert event["seller_id"] == SELLER_ID
+    assert event["event"] == "DELETED"
+    assert event["date"]
+    assert_uuid(event["idempotency_key"])
+
+
+def test_delete_emits_product_deleted_to_b2c(
+    client,
+    db_session: Session,
+    test_product_factory,
+    auth_headers,
+    test_event_requests,
+):
+    product = test_product_factory()
+    sku = create_existing_sku(db_session, product)
+
+    response = client.delete(f"/api/v1/products/{product.id}", headers=auth_headers(SELLER_ID))
+
+    assert response.status_code == 204
+    assert response.content == b""
+    assert len(test_event_requests["b2c"]) == 1
+    request = test_event_requests["b2c"][0]
+    event = request["json"]
+    assert request["url"] == f"{settings.b2c_url}/api/v1/events/product"
+    assert request["headers"]["X-Service-Key"] == settings.b2b_to_b2c_key
+    assert event["event"] == "PRODUCT_DELETED"
+    assert event["product_id"] == str(product.id)
+    assert event["sku_ids"] == [str(sku.id)]
+    assert event["date"]
+    assert_uuid(event["idempotency_key"])
+
+
+def test_delete_already_deleted_returns_400(
+    client,
+    test_product_factory,
+    auth_headers,
+    test_event_requests,
+):
+    product = test_product_factory(deleted=True)
+
+    response = client.delete(f"/api/v1/products/{product.id}", headers=auth_headers(SELLER_ID))
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "code": "INVALID_REQUEST",
+        "message": "Product already deleted",
+    }
+    assert test_event_requests == {"moderation": [], "b2c": []}
+
+
+def test_delete_others_product_returns_403(
+    client,
+    db_session: Session,
+    test_product_factory,
+    auth_headers,
+    test_event_requests,
+):
+    product = test_product_factory(seller_id=SELLER_ID)
+    other_seller_id = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+
+    response = client.delete(f"/api/v1/products/{product.id}", headers=auth_headers(other_seller_id))
+
+    assert response.status_code == 403
+    assert response.json() == {
+        "code": "NOT_OWNER",
+        "message": "Product does not belong to the authenticated seller",
+    }
+    db_session.refresh(product)
+    assert product.deleted is False
+    assert test_event_requests == {"moderation": [], "b2c": []}
+
+
+def test_deleted_product_not_in_seller_list(
+    client,
+    db_session: Session,
+    test_product_factory,
+    auth_headers,
+    test_event_requests,
+):
+    visible_product = test_product_factory()
+    deleted_product = test_product_factory()
+
+    response = client.delete(f"/api/v1/products/{deleted_product.id}", headers=auth_headers(SELLER_ID))
+    assert response.status_code == 204
+    assert response.content == b""
+
+    list_response = client.get(
+        "/api/v1/products",
+        params={"seller_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"},
+        headers=auth_headers(SELLER_ID),
+    )
+
+    assert list_response.status_code == 200
+    body = list_response.json()
+    assert body["total_count"] == 1
+    assert [item["id"] for item in body["items"]] == [str(visible_product.id)]
+
+    db_session.refresh(deleted_product)
+    assert deleted_product.deleted is True
