@@ -1,12 +1,19 @@
+import logging
 import uuid
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from src.models import Category, Product, ProductCharacteristic, ProductImage, ProductStatus, SKU
 from src.schemas.product import ProductCreate, ProductUpdate
+from src.services.b2c_service import send_product_deleted_event as send_b2c_product_deleted_event
 from src.services.errors import NotFoundError
-from src.services.moderation_service import send_product_edited_event
+from src.services.moderation_service import (
+    send_product_deleted_event as send_moderation_product_deleted_event,
+    send_product_edited_event,
+)
+
+logger = logging.getLogger(__name__)
 
 
 class ProductCreateValidationError(Exception):
@@ -21,6 +28,10 @@ class ProductForbiddenError(Exception):
 
 
 class ProductOwnerError(Exception):
+    pass
+
+
+class ProductAlreadyDeletedError(Exception):
     pass
 
 
@@ -52,6 +63,19 @@ def get_product_by_id(db: Session, product_id: uuid.UUID) -> Product:
     if product is None:
         raise NotFoundError(f"Product with id={product_id} not found")
     return product
+
+
+def list_seller_products(db: Session, seller_id: uuid.UUID, limit: int = 20, offset: int = 0) -> tuple[list[Product], int]:
+    filters = (Product.seller_id == seller_id, Product.deleted.is_(False))
+    total_count = db.scalar(select(func.count(Product.id)).where(*filters)) or 0
+    products = db.scalars(
+        _product_query()
+        .where(*filters)
+        .order_by(Product.id)
+        .offset(offset)
+        .limit(limit)
+    ).all()
+    return list(products), total_count
 
 
 def create_product(db: Session, payload: ProductCreate, seller_id: uuid.UUID) -> Product:
@@ -121,4 +145,27 @@ def update_product(db: Session, product_id: uuid.UUID, payload: ProductUpdate, s
 
     db.commit()
     return get_product_by_id(db, product_id)
+
+
+def delete_product(db: Session, product_id: uuid.UUID, seller_id: uuid.UUID) -> None:
+    product = get_product_by_id(db, product_id)
+
+    if product.seller_id != seller_id:
+        raise ProductOwnerError("Product does not belong to the authenticated seller")
+    if product.deleted:
+        raise ProductAlreadyDeletedError("Product already deleted")
+
+    sku_ids = [sku.id for sku in product.skus]
+    product.deleted = True
+    db.commit()
+
+    try:
+        send_moderation_product_deleted_event(product_id=str(product.id), seller_id=str(seller_id))
+    except Exception:
+        logger.exception("Failed to send product DELETED event to Moderation")
+
+    try:
+        send_b2c_product_deleted_event(product_id=str(product.id), sku_ids=sku_ids)
+    except Exception:
+        logger.exception("Failed to send PRODUCT_DELETED event to B2C")
 
