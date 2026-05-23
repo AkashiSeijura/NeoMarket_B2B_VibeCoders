@@ -463,3 +463,128 @@ Decision: add `POST /api/v1/inventory/reserve` and `POST /api/v1/inventory/unres
 After the UUID migration, reservation HTTP request bodies must carry `sku_id` as JSON strings because real clients cannot send Python `uuid.UUID` objects. The route parses those strings into `uuid.UUID` instances for service and SQLAlchemy lookups, while cached reservation payloads, API responses, failed items, and B2C event payloads serialize UUID identifiers back to strings at the JSON boundary.
 
 Decision: keep reservation lookup and schema types UUID-aware, remove integer SKU parsing from reserve/unreserve normalization, and update reservation tests to send `str(sku.id)` in all JSON payloads. Reservation business logic, idempotency rules, all-or-nothing stock behavior, and legacy/canonical route behavior are unchanged.
+
+---
+
+# US-B2B-09 Summary
+
+Implemented `POST /api/v1/events/moderation` on top of the stacked US-B2B-01 through US-B2B-08 changes. This slice depends on US-B2B-01 through US-B2B-08 until those changes are merged.
+
+The endpoint is service-to-service from Moderation and authenticates only with `X-Service-Key == settings.moderation_to_b2b_key`. Missing or invalid service keys return `401 {"code":"UNAUTHORIZED","message":"Authorization required"}`. Seller JWTs are not required and are not accepted as a substitute.
+
+Route-local parsing validates required `idempotency_key`, UUID string `product_id`, and `status` fields and returns canonical `400 INVALID_REQUEST` errors instead of FastAPI `422`. `status` accepts only `MODERATED` and `BLOCKED`. `BLOCKED` events additionally require `hard_block: bool`, `blocking_reason: object`, and `field_reports: list`.
+
+Moderation decisions mutate product state atomically with persisted idempotency:
+
+- `MODERATED` sets `status=MODERATED` and clears `blocking_reason` and `field_reports`.
+- `BLOCKED` with `hard_block=false` sets `status=BLOCKED`, saves `blocking_reason` and `field_reports`, and emits B2C `PRODUCT_BLOCKED`.
+- `BLOCKED` with `hard_block=true` sets `status=HARD_BLOCKED`, saves `blocking_reason` and `field_reports`, and emits B2C `PRODUCT_BLOCKED`.
+- Missing products return `404 {"code":"NOT_FOUND","message":"Product not found"}`.
+
+Added `processed_moderation_events`, keyed by `idempotency_key`, with `product_id`, `request_hash`, `request_payload`, cached `response`, and `created_at`. Replaying the same key and same normalized payload returns the cached `200` response without changing the product or sending a duplicate B2C event. Reusing the same key with a different payload returns `409 CONFLICT`.
+
+B2C `PRODUCT_BLOCKED` delivery happens after the DB commit. If B2C delivery fails, the committed product state and processed-event row are kept and the failure is logged; idempotent replay still does not send a duplicate B2C event.
+
+Seller operations now reject terminal hard-blocked products for both product `PUT` and product `DELETE` with `403 FORBIDDEN`.
+
+OpenAPI gap: `flow/b2b.yaml` lacks `/api/v1/events/moderation`, so no OpenAPI edit was made in this repository. The implementation follows the US-B2B-09 assignment plan and leaves `flow/*` unchanged.
+
+# US-B2B-09 Validation
+
+Pytest proof commands:
+
+```powershell
+python -m pytest tests/api/test_moderation_events.py -vv
+python -m pytest tests/api/test_products.py tests/api/test_skus.py tests/api/test_invoices.py tests/api/test_reservations.py tests/api/test_moderation_events.py -vv
+```
+
+Required scenario results:
+
+- `test_moderated_event_clears_blocking_data`: passed
+- `test_blocked_soft_saves_field_reports`: passed
+- `test_blocked_hard_sets_terminal_status`: passed
+- `test_hard_blocked_product_rejects_seller_edits`: passed
+- `test_duplicate_event_same_idempotency_key_no_side_effects`: passed
+- `test_missing_service_key_returns_401`: passed
+
+Suite results:
+
+- `tests/api/test_moderation_events.py`: 16 passed
+- `tests/api/test_products.py tests/api/test_skus.py tests/api/test_invoices.py tests/api/test_reservations.py tests/api/test_moderation_events.py`: 91 passed
+
+# ADR: Moderation Event Idempotency
+
+Options considered:
+
+- DB-backed `processed_moderation_events` table keyed by `idempotency_key`: selected. The primary key gives the lowest race-condition risk for parallel duplicate events and keeps replay behavior explicit by persisting the request hash, original payload, and cached response. This is consistent with the existing reservation idempotency pattern.
+- `last_event_key` on `products`: simpler schema, but unsafe for replay history and payload conflict detection. It can only remember one key per product and cannot safely distinguish old replays from conflicting payloads.
+- Conditional upsert only: useful as an implementation primitive, but insufficient on its own without persisted hash, payload, and response for deterministic replay and conflict responses.
+
+Decision: use a persisted processed-events table. The service claims the idempotency key, applies the product mutation, stores the cached response, and commits in one DB transaction. B2C delivery is intentionally post-commit and best-effort.
+
+---
+
+# US-B2B-09 OpenAPI Migration Summary
+
+US-B2B-09 is migrated to the final authoritative `flow/openapi.yaml` moderation event contract. For the affected moderation event endpoint, this contract matches the previously reviewed `neomarket-b2b.yaml` moderation event contract.
+
+Migrated the inbound Moderation event API to the authoritative `flow/openapi.yaml` route while preserving the existing compatibility route. No US-B2B-10+ behavior is included.
+
+Routes:
+
+- Canonical: `POST /api/v1/moderation/events`
+- Compatibility: `POST /api/v1/events/moderation`
+
+Both routes authenticate with `X-Service-Key == settings.moderation_to_b2b_key`. Missing or invalid keys return `401 {"code":"UNAUTHORIZED","message":"Authorization required"}`.
+
+The compatibility route keeps the existing request shape (`status`, UUID string `product_id`, `blocking_reason`) and returns the existing `200` JSON body. The canonical route accepts the OpenAPI request shape (`event_type`, UUID string `product_id`, `occurred_at`, `blocking_reason_id`, `moderator_comment`, `hard_block`, `field_reports`) and returns `204 No Content` with an empty body for first success and idempotent replay. Reusing an idempotency key with a different normalized payload still returns `409 CONFLICT`.
+
+Canonical boundary adapter notes:
+
+- DB product IDs are UUID-backed; both moderation routes accept JSON string `product_id` values and map them to internal `uuid.UUID` values for lookup and idempotency storage.
+- `event_type=MODERATED` maps to internal `status=MODERATED`.
+- `event_type=BLOCKED` maps to internal `status=BLOCKED`.
+- `blocking_reason_id` is enforced for `BLOCKED` events and is stored in the existing `blocking_reason` JSON object with `moderator_comment` when present.
+- `field_reports` remains optional/nullable per `flow/openapi.yaml`; missing or null values normalize to `[]`.
+
+Service semantics are unchanged: `MODERATED` clears blocking data, soft `BLOCKED` sets `BLOCKED`, hard `BLOCKED` sets `HARD_BLOCKED`, and both blocked paths emit B2C `PRODUCT_BLOCKED` only once per processed idempotency key.
+
+# US-B2B-09 OpenAPI Migration Validation
+
+Pytest proof commands:
+
+```powershell
+python -m pytest tests/api/test_moderation_events.py -vv
+python -m pytest tests/api/test_products.py tests/api/test_skus.py tests/api/test_invoices.py tests/api/test_reservations.py tests/api/test_moderation_events.py -vv
+```
+
+Required scenario results:
+
+- `test_canonical_moderated_event_returns_204_and_clears_blocking_data`: passed
+- `test_canonical_blocked_soft_returns_204_saves_field_reports_and_emits_b2c`: passed
+- `test_canonical_blocked_hard_returns_204_sets_terminal_status`: passed
+- `test_canonical_duplicate_event_same_idempotency_key_returns_204_no_duplicate_side_effects`: passed
+- `test_canonical_missing_service_key_returns_401`: passed
+- `test_canonical_payload_validation_returns_400`: passed
+- `test_legacy_moderation_event_route_still_returns_200_body`: passed
+
+Suite results:
+
+- `tests/api/test_moderation_events.py`: 16 passed
+- `tests/api/test_products.py tests/api/test_skus.py tests/api/test_invoices.py tests/api/test_reservations.py tests/api/test_moderation_events.py`: 91 passed
+
+# ADR: Moderation Event OpenAPI Migration
+
+Options considered:
+
+- Add canonical `/api/v1/moderation/events` as a route-level adapter over the existing moderation event service: selected. It aligns B2B with `flow/openapi.yaml` while reusing the tested persistence, idempotency, product state transitions, and B2C event delivery.
+- Replace `/api/v1/events/moderation`: rejected because the existing B2B flow and tests still cover that compatibility route and its `200` response body.
+- Convert moderation event boundaries to UUID strings after the UUID migration: selected. Real HTTP clients send UUIDs as strings, while the route/service keep internal lookups UUID-aware.
+
+Decision: keep the moderation business behavior stable and perform OpenAPI migration at the route/schema boundary. The canonical route normalizes request fields into the existing service payload, returns bodyless `204` responses, and preserves existing idempotency conflict behavior.
+
+# ADR: Moderation UUID Request Boundary
+
+After the UUID migration, moderation HTTP request bodies must carry `product_id` as JSON strings because real clients cannot send Python `uuid.UUID` objects. Both moderation routes parse those strings into `uuid.UUID` instances for service and SQLAlchemy lookups, while processed-event JSON payloads, cached responses, legacy route responses, and B2C `PRODUCT_BLOCKED` events serialize product identifiers back to strings at the JSON boundary.
+
+Decision: keep moderation schemas and persistence UUID-aware, remove integer product ID parsing from moderation event routes, and update moderation tests to send `str(product.id)` in all JSON payloads. Moderation status transitions, idempotency behavior, service-key authentication, and B2C event behavior are unchanged.
