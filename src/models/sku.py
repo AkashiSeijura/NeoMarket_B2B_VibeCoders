@@ -15,7 +15,12 @@ class SKU(Base):
     product_id: Mapped[uuid.UUID] = mapped_column(GUID(), ForeignKey("products.id", ondelete="CASCADE"))
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     price: Mapped[int] = mapped_column(Integer, nullable=False)
+    cost_price: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    discount: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    article: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    image: Mapped[str] = mapped_column(String(1024), nullable=False, default="")
     active_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    reserved_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
