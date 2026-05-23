@@ -224,6 +224,8 @@ def delete_product(db: Session, product_id: uuid.UUID, seller_id: uuid.UUID) -> 
 
     if product.seller_id != seller_id:
         raise ProductOwnerError("Product does not belong to the authenticated seller")
+    if product.status == ProductStatus.HARD_BLOCKED:
+        raise ProductForbiddenError("Cannot delete hard-blocked product")
     if product.deleted:
         raise ProductAlreadyDeletedError("Product already deleted")
 

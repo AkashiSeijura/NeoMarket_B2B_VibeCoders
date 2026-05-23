@@ -1,5 +1,5 @@
 from datetime import UTC, datetime
-from uuid import NAMESPACE_URL, uuid4, uuid5
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 import httpx
 
@@ -10,37 +10,40 @@ class ModerationSenderError(Exception):
     pass
 
 
-def build_product_created_event(product_id: int, seller_id: str) -> dict[str, str | int]:
+JsonId = UUID | str
+
+
+def build_product_created_event(product_id: JsonId, seller_id: str) -> dict[str, str]:
     return {
         "idempotency_key": str(uuid5(NAMESPACE_URL, f"product-created:{product_id}")),
-        "product_id": product_id,
+        "product_id": str(product_id),
         "seller_id": seller_id,
         "event": "CREATED",
         "date": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
     }
 
 
-def build_product_edited_event(product_id: int, seller_id: str) -> dict[str, str | int]:
+def build_product_edited_event(product_id: JsonId, seller_id: str) -> dict[str, str]:
     return {
         "idempotency_key": str(uuid4()),
-        "product_id": product_id,
+        "product_id": str(product_id),
         "seller_id": seller_id,
         "event": "EDITED",
         "date": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
     }
 
 
-def build_product_deleted_event(product_id: int, seller_id: str) -> dict[str, str | int]:
+def build_product_deleted_event(product_id: JsonId, seller_id: str) -> dict[str, str]:
     return {
         "idempotency_key": str(uuid4()),
-        "product_id": product_id,
+        "product_id": str(product_id),
         "seller_id": seller_id,
         "event": "DELETED",
         "date": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
     }
 
 
-def _send_product_event(payload: dict[str, str | int]) -> None:
+def _send_product_event(payload: dict[str, str]) -> None:
     url = f"{settings.moderation_url.rstrip('/')}/api/v1/events/product"
     headers = {"X-Service-Key": settings.b2b_to_mod_key}
 
@@ -56,13 +59,13 @@ def _send_product_event(payload: dict[str, str | int]) -> None:
         raise ModerationSenderError("Moderation service unavailable") from exc
 
 
-def send_product_created_event(product_id: int, seller_id: str) -> None:
+def send_product_created_event(product_id: JsonId, seller_id: str) -> None:
     _send_product_event(build_product_created_event(product_id, seller_id))
 
 
-def send_product_edited_event(product_id: int, seller_id: str) -> None:
+def send_product_edited_event(product_id: JsonId, seller_id: str) -> None:
     _send_product_event(build_product_edited_event(product_id, seller_id))
 
 
-def send_product_deleted_event(product_id: int, seller_id: str) -> None:
+def send_product_deleted_event(product_id: JsonId, seller_id: str) -> None:
     _send_product_event(build_product_deleted_event(product_id, seller_id))

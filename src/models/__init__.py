@@ -2,6 +2,7 @@ from src.models.base import Base
 from src.models.category import Category
 from src.models.invoice import Invoice, InvoiceItem, InvoiceStatus
 from src.models.product import Product, ProductCharacteristic, ProductImage, ProductStatus
+from src.models.processed_moderation_event import ProcessedModerationEvent
 from src.models.reservation import ReserveOperation
 from src.models.sku import SKU, SKUCharacteristic
 
@@ -12,6 +13,7 @@ __all__ = [
     "ProductImage",
     "ProductCharacteristic",
     "ProductStatus",
+    "ProcessedModerationEvent",
     "SKU",
     "SKUCharacteristic",
     "Invoice",
