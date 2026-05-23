@@ -1,6 +1,7 @@
 from src.models import (
     Base,
     Category,
+    FulfilledOrder,
     Invoice,
     InvoiceItem,
     Product,
@@ -15,6 +16,7 @@ from src.models import (
 __all__ = [
     "Base",
     "Category",
+    "FulfilledOrder",
     "Product",
     "ProductImage",
     "ProductCharacteristic",
