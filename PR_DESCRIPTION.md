@@ -223,3 +223,56 @@ python -m pytest tests/api/test_products.py tests/api/test_skus.py -vv
 - Синхронная Moderation плюс outbox или fire-and-forget для B2C: уменьшает один failure mode, но создаёт смешанные гарантии доставки и всё равно требует инфраструктуру для одной стороны.
 
 Решение: сначала фиксировать мягкое удаление, затем синхронно пытаться отправить оба каскадных события в best-effort режиме и логировать ошибки. Если Moderation или B2C недоступны, B2B остаётся в состоянии `deleted=true`, а пропущенное внешнее событие считается документированной first-iteration inconsistency. Retry и reconciliation должны перейти на outbox в будущем срезе.
+Decision: commit the soft delete first, then synchronously attempt both outbound sends as best-effort operations and log failures. If Moderation or B2C is unavailable, B2B remains deleted and the missing external event is a documented first-iteration inconsistency. Retry and reconciliation should move to an outbox in a future slice.
+
+---
+
+# US-B2B-05 Summary
+
+Migrated `GET /api/v1/products/{id}` to the dual-mode detail behavior from `flow/neomarket-b2b.yaml` on top of US-B2B-01 through US-B2B-04. This remains a stacked change until those earlier slices are merged.
+
+When `X-Service-Key` is absent, the endpoint stays in seller mode: it authenticates the seller from Bearer JWT claims, uses only the JWT `seller_id` for ownership, and returns the same canonical `404 {"code":"NOT_FOUND","message":"Product not found"}` for nonexistent products, deleted products, and products owned by another seller. Seller detail keeps the existing seller-only fields, including `cost_price`, `reserved_quantity`, `blocking_reason`, and `field_reports`.
+
+When a valid `X-Service-Key` is present, the endpoint uses public B2C mode and does not require or trust Bearer JWT. Invalid or empty service keys return `401 {"code":"UNAUTHORIZED","message":"Authorization required"}`, even if an Authorization header is also present. Public mode only returns products that are `MODERATED`, not deleted, and have at least one SKU with `active_quantity > 0`; blocked, deleted, nonexistent, and out-of-stock products return the same 404.
+
+Seller and public detail responses preserve the accepted UUID-backed contract from US-B2B-01 and US-B2B-02: product, category, image, characteristic, and nested SKU ids are UUID values, nested SKU images are returned as `images[]`, and no integer-id response serialization is reintroduced. Public detail uses separate response schemas to omit seller-only fields, includes only in-stock public SKUs, maps public `stock_quantity` to `active_quantity`, and keeps `active_quantity` because the schema requires it.
+
+External arbiter contract fix: seller detail now includes ProductResponse-required top-level fields `slug`, `blocking_reason_id`, and `moderator_comment` while keeping the enriched `blocking_reason` and `field_reports` details for blocked products. Seller detail nested SKUs now include SKUResponse-required fields `product_id`, `stock_quantity`, `article`, `images`, `created_at`, and `updated_at` alongside seller-only `cost_price` and `reserved_quantity`. Seller SKU images are returned as `images[]` with stable synthetic response-only ids shaped as `sku-image:{sku.id}:0` because this codebase stores only one `skus.image` URL and has no SKU image table. The shared `ImageOut` and `CharacteristicOut` `id` fix is preserved, and the public view remains seller-data-safe by hiding `cost_price`, `reserved_quantity`, `blocking_reason`, and `field_reports`.
+
+# US-B2B-05 Validation
+
+Pytest proof commands:
+
+```powershell
+python -m pytest tests/api/test_products.py -vv -k "test_get_moderated_product_returns_full_payload or test_get_blocked_product_returns_blocking_reason_and_field_reports or test_get_others_product_returns_404 or test_get_nonexistent_returns_404"
+python -m pytest tests/api/test_products.py -vv -k "test_get_moderated_product_returns_full_payload or test_get_blocked_product_returns_blocking_reason_and_field_reports or test_get_others_product_returns_404 or test_get_nonexistent_returns_404 or test_public_product_detail_with_valid_service_key_returns_public_payload or test_public_product_detail_hides_seller_only_fields or test_public_product_detail_invalid_service_key_returns_401 or test_public_product_detail_blocked_product_returns_404 or test_public_product_detail_deleted_product_returns_404 or test_public_product_detail_without_active_sku_returns_404"
+python -m pytest tests/api/test_products.py tests/api/test_skus.py -vv
+```
+
+Required scenario results:
+
+- `test_get_moderated_product_returns_full_payload`: passed
+- `test_get_blocked_product_returns_blocking_reason_and_field_reports`: passed
+- `test_get_others_product_returns_404`: passed
+- `test_get_nonexistent_returns_404`: passed
+- `test_public_product_detail_with_valid_service_key_returns_public_payload`: passed
+- `test_public_product_detail_hides_seller_only_fields`: passed
+- `test_public_product_detail_invalid_service_key_returns_401`: passed
+- `test_public_product_detail_blocked_product_returns_404`: passed
+- `test_public_product_detail_deleted_product_returns_404`: passed
+- `test_public_product_detail_without_active_sku_returns_404`: passed
+
+Suite results:
+
+- Required US-B2B-05 seller/public detail scenarios: 10 passed
+- `tests/api/test_products.py tests/api/test_skus.py`: 37 passed
+
+# ADR: Seller Product Detail Shape
+
+Options considered:
+
+- Keep seller JWT only on this path: lowest change, but conflicts with `flow/neomarket-b2b.yaml`, where the same product detail endpoint also supports service-key public detail.
+- Add separate public routes now: cleaner long-term separation, but public catalog routes belong to US-B2B-07 and are out of scope for this migration.
+- Use a single route with an auth-mode dependency and separate response schemas: keeps the path aligned with the authoritative detail contract while limiting the change to product detail and reducing leakage risk through schema separation.
+
+Decision: use a single `GET /api/v1/products/{id}` route with explicit auth-mode detection. `X-Service-Key` takes precedence when present, invalid service keys fail closed, and seller JWT handling is preserved for the no-service-key path. Seller and public modes use separate service lookups and separate response schemas so seller-only fields are not serialized in public mode.

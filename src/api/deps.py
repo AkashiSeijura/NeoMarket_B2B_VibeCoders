@@ -3,10 +3,10 @@ import base64
 import hashlib
 import hmac
 import json
-from typing import Any
+from typing import Any, Literal
 import uuid
 
-from fastapi import Depends
+from fastapi import Depends, Header
 from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordBearer
 
@@ -18,6 +18,12 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login", auto_error=Fals
 @dataclass(frozen=True)
 class CurrentSeller:
     seller_id: uuid.UUID
+
+
+@dataclass(frozen=True)
+class ProductDetailAccess:
+    mode: Literal["seller", "public"]
+    seller_id: uuid.UUID | None = None
 
 
 def unauthorized_response() -> JSONResponse:
@@ -56,7 +62,7 @@ def _decode_hs256_token(token: str) -> dict[str, Any] | None:
     return payload if isinstance(payload, dict) else None
 
 
-def get_current_seller(token: str | None = Depends(oauth2_scheme)) -> CurrentSeller | JSONResponse:
+def _current_seller_from_token(token: str | None) -> CurrentSeller | JSONResponse:
     if not token:
         return unauthorized_response()
 
@@ -71,3 +77,22 @@ def get_current_seller(token: str | None = Depends(oauth2_scheme)) -> CurrentSel
         return unauthorized_response()
 
     return CurrentSeller(seller_id=seller_uuid)
+
+
+def get_current_seller(token: str | None = Depends(oauth2_scheme)) -> CurrentSeller | JSONResponse:
+    return _current_seller_from_token(token)
+
+
+def get_product_detail_access(
+    x_service_key: str | None = Header(default=None, alias="X-Service-Key"),
+    token: str | None = Depends(oauth2_scheme),
+) -> ProductDetailAccess | JSONResponse:
+    if x_service_key is not None:
+        if not x_service_key.strip() or not hmac.compare_digest(x_service_key, settings.b2c_to_b2b_key):
+            return unauthorized_response()
+        return ProductDetailAccess(mode="public")
+
+    current_seller = _current_seller_from_token(token)
+    if isinstance(current_seller, JSONResponse):
+        return current_seller
+    return ProductDetailAccess(mode="seller", seller_id=current_seller.seller_id)
