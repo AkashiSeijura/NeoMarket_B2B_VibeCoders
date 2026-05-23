@@ -1,5 +1,6 @@
 import logging
 import uuid
+from collections.abc import Sequence
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
@@ -103,6 +104,50 @@ def list_seller_products(db: Session, seller_id: uuid.UUID, limit: int = 20, off
         .limit(limit)
     ).all()
     return list(products), total_count
+
+
+def list_catalog_products(
+    db: Session,
+    *,
+    product_ids: Sequence[uuid.UUID] | None = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> tuple[list[Product], int]:
+    filters = [
+        Product.status == ProductStatus.MODERATED,
+        Product.deleted.is_(False),
+        Product.skus.any(SKU.active_quantity > 0),
+    ]
+    if product_ids is not None:
+        filters.append(Product.id.in_(product_ids))
+
+    total_count = db.scalar(select(func.count(Product.id)).where(*filters)) or 0
+    query = _product_query().where(*filters).order_by(Product.id)
+    if product_ids is None:
+        query = query.offset(offset).limit(limit)
+
+    products = db.scalars(query).all()
+    return list(products), total_count
+
+
+def list_public_catalog_products(db: Session, *, limit: int = 20, offset: int = 0) -> tuple[list[Product], int]:
+    return list_catalog_products(db, limit=limit, offset=offset)
+
+
+def list_public_products_by_ids(db: Session, product_ids: Sequence[uuid.UUID]) -> list[Product]:
+    if not product_ids:
+        return []
+
+    products, _ = list_catalog_products(db, product_ids=product_ids)
+    product_by_id = {product.id: product for product in products}
+    ordered_products: list[Product] = []
+    seen_ids: set[uuid.UUID] = set()
+    for product_id in product_ids:
+        product = product_by_id.get(product_id)
+        if product is not None and product_id not in seen_ids:
+            ordered_products.append(product)
+            seen_ids.add(product_id)
+    return ordered_products
 
 
 def create_product(db: Session, payload: ProductCreate, seller_id: uuid.UUID) -> Product:
