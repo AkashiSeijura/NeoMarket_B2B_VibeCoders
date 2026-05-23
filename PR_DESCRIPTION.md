@@ -401,3 +401,65 @@ Options considered:
 - Implement only pagination and document the unsupported surface: selected for this branch. It keeps behavior narrow and testable while making the contract gap explicit.
 
 Decision: only `limit` and `offset` are active for `GET /api/v1/public/products` in this slice. `category_id`, `search`, `min_price`, `max_price`, `seller_id`, dynamic `filters`, and advanced `sort` remain deferred.
+
+---
+
+# US-B2B-08 Summary
+
+Migrated US-B2B-08 reserve/unreserve to the canonical inventory routes from `flow/openapi.yaml`. This matches the previously reviewed `neomarket-b2b.yaml` inventory reserve/unreserve contract.
+
+Added `POST /api/v1/inventory/reserve` and `POST /api/v1/inventory/unreserve`, both authenticated only by `X-Service-Key == settings.b2c_to_b2b_key`. Seller JWTs are not accepted as a substitute. Reserve validates `idempotency_key`, `order_id`, non-empty `items`, UUID-format `sku_id`, and `quantity > 0`; unreserve validates `order_id`, non-empty `items`, UUID-format `sku_id`, and `quantity > 0`.
+
+Kept `POST /api/v1/reserve` and `POST /api/v1/unreserve` as legacy compatibility routes with their original response shapes.
+
+Reserve is all-or-nothing against catalog-visible stock only: parent product must be `MODERATED`, not deleted, and have enough `active_quantity`. Hidden, deleted, nonexistent, and non-moderated SKUs return the non-leaking reserve conflict shape with `available: 0` and `OUT_OF_STOCK`; visible SKUs with positive but insufficient stock return `INSUFFICIENT_STOCK`. Successful reserve decrements `active_quantity`, increments `reserved_quantity`, stores a cached success response in `reserve_operations`, and emits `SKU_OUT_OF_STOCK` after commit when a SKU reaches zero active stock.
+
+Canonical reserve returns `{"order_id","status":"RESERVED","reserved_at"}`. Canonical reserve idempotency includes `order_id` in the normalized request hash, so same `idempotency_key` + same `order_id` + same normalized items replays with the original `reserved_at`, while changing either `order_id` or items returns `409 CONFLICT`. Legacy reserve continues to hash without `order_id`.
+
+Canonical reserve stock conflicts now return `409 {"code":"CONFLICT","message":"Unable to reserve inventory","details":{"failed_items":[...]}}`. The legacy reserve conflict shape remains `{"reserved":false,"failed_items":[...]}`.
+
+Unreserve restores stock in one transaction by moving quantities from `reserved_quantity` back to `active_quantity`. Canonical unreserve returns `{"order_id","status":"UNRESERVED","processed_at"}`. If any item would make `reserved_quantity` negative, it returns `409 {"code":"CONFLICT","message":"Insufficient reserved quantity"}` and rolls back all changes. No persistent unreserve replay was added; unreserve idempotency remains unchanged from the existing US-B2B-08 behavior because the schema has no order-operation storage table.
+
+No US-B2B-09+ behavior was implemented: no moderation event alias, no fulfill, no seller list migration, and no SKU delete behavior.
+
+PostgreSQL production uses `SELECT FOR UPDATE` for SKU rows inside the reserve/unreserve transaction. SQLite tests verify deterministic all-or-nothing behavior but do not prove real row-lock semantics. B2C event delivery is best-effort after a successful reserve commit; delivery failure is logged and does not roll back stock changes.
+
+# US-B2B-08 Validation
+
+Pytest proof commands:
+
+```powershell
+python -m pytest tests/api/test_reservations.py -vv
+python -m pytest tests/api/test_products.py tests/api/test_skus.py tests/api/test_invoices.py tests/api/test_reservations.py -vv
+```
+
+Required scenario results:
+
+- `test_inventory_reserve_returns_openapi_response`: passed
+- `test_inventory_reserve_requires_order_id`: passed
+- `test_inventory_reserve_idempotent_replay_returns_same_reserved_at_without_double_deduction`: passed
+- `test_inventory_reserve_same_key_different_order_id_returns_409`: passed
+- `test_inventory_reserve_conflict_returns_error_with_failed_items_details_and_rolls_back`: passed
+- `test_inventory_unreserve_returns_openapi_response`: passed
+- `test_legacy_reserve_and_unreserve_routes_keep_response_shapes`: passed
+
+Suite results:
+
+- `tests/api/test_reservations.py`: 18 passed
+- `tests/api/test_products.py tests/api/test_skus.py tests/api/test_invoices.py tests/api/test_reservations.py`: 75 passed
+
+# ADR: Inventory OpenAPI Migration Strategy
+
+Options considered:
+
+- Add canonical inventory routes on the existing reservation service: selected. It aligns B2C calls with `flow/openapi.yaml` while preserving the tested reserve transaction and event semantics.
+- Replace legacy reserve/unreserve routes: rejected because existing callers still depend on `/api/v1/reserve` and `/api/v1/unreserve` response shapes.
+- Add persistent unreserve replay storage: rejected for this migration because it would require a new order-operation model beyond US-B2B-08 and is explicitly deferred.
+
+Decision: add `POST /api/v1/inventory/reserve` and `POST /api/v1/inventory/unreserve` as canonical wrappers over the existing reservation service. Canonical reserve passes `order_id` into the normalized idempotency hash and derives `reserved_at` from `ReserveOperation.created_at`; legacy reserve omits `order_id` and keeps its cached response. Canonical unreserve returns the OpenAPI response shape but does not add persistent replay.
+
+# ADR: Reservation UUID Request Boundary
+
+After the UUID migration, reservation HTTP request bodies must carry `sku_id` as JSON strings because real clients cannot send Python `uuid.UUID` objects. The route parses those strings into `uuid.UUID` instances for service and SQLAlchemy lookups, while cached reservation payloads, API responses, failed items, and B2C event payloads serialize UUID identifiers back to strings at the JSON boundary.
+
+Decision: keep reservation lookup and schema types UUID-aware, remove integer SKU parsing from reserve/unreserve normalization, and update reservation tests to send `str(sku.id)` in all JSON payloads. Reservation business logic, idempotency rules, all-or-nothing stock behavior, and legacy/canonical route behavior are unchanged.
