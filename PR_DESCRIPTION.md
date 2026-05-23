@@ -276,3 +276,60 @@ Options considered:
 - Use a single route with an auth-mode dependency and separate response schemas: keeps the path aligned with the authoritative detail contract while limiting the change to product detail and reducing leakage risk through schema separation.
 
 Decision: use a single `GET /api/v1/products/{id}` route with explicit auth-mode detection. `X-Service-Key` takes precedence when present, invalid service keys fail closed, and seller JWT handling is preserved for the no-service-key path. Seller and public modes use separate service lookups and separate response schemas so seller-only fields are not serialized in public mode.
+
+---
+
+# US-B2B-06 Summary
+
+Implemented seller-facing `POST /api/v1/invoices` for inbound product supply invoices.
+
+This PR is stacked on top of US-B2B-01, US-B2B-02, US-B2B-03, US-B2B-04, and US-B2B-05 until they are merged into dev.
+
+The endpoint authenticates the seller from Bearer JWT claims, ignores any body `seller_id`/`sellerId`, validates every requested SKU through its parent product ownership, and only allows SKUs whose parent product is exactly `MODERATED` and not deleted. Invoice creation stores a document with `status=CREATED`, requested item quantities, and `accepted_quantity=null`; it does not change `active_quantity`, `reserved_quantity`, or accepted stock.
+
+Added migration `0007_add_pending_invoice_creation_fields.py` to reuse the existing invoice tables while adding `invoices.seller_id` and nullable `invoice_items.accepted_quantity`.
+
+US-B2B-06 is migrated to the final authoritative `flow/openapi.yaml` contract; this invoice contract matches the previously reviewed `flow/neomarket-b2b.yaml` contract for the affected create/accept endpoints. `POST /api/v1/invoices` creates invoices in `CREATED`, and `POST /api/v1/invoices/{invoice_id}/accept` is the canonical accept route. The existing `POST /api/v1/invoices/accept` route remains available for compatibility and delegates to the same accept service. No US-B2B-07+ invoice behavior is included.
+
+# US-B2B-06 Validation
+
+Pytest proof commands:
+
+```powershell
+python -m pytest tests/api/test_invoices.py -vv -k "create_invoice_with_moderated_sku_returns_201 or empty_items_returns_400 or non_moderated_sku_returns_400 or others_sku_returns_403"
+python -m pytest tests/api/test_products.py tests/api/test_skus.py tests/api/test_invoices.py -vv
+```
+
+Required scenario results:
+
+- `test_create_invoice_with_moderated_sku_returns_201`: passed
+- `test_empty_items_returns_400`: passed
+- `test_non_moderated_sku_returns_400`: passed
+- `test_others_sku_returns_403`: passed
+- `test_accept_invoice_path_alias_accepts_invoice`: passed
+- `test_legacy_accept_route_still_works`: passed
+
+Suite results:
+
+- `tests/api/test_invoices.py`: 8 passed
+- `tests/api/test_products.py tests/api/test_skus.py tests/api/test_invoices.py`: 45 passed
+
+# ADR: Invoice OpenAPI Alignment
+
+Options considered:
+
+- Keep invoice creation at `PENDING` and only add the new route: minimal code change, but conflicts with the authoritative `flow/openapi.yaml` status enum and create summary.
+- Rename the legacy accept route only: aligns the URL, but would break existing callers that already use `POST /api/v1/invoices/accept`.
+- Use `CREATED` on create, add the canonical path accept route, and keep the legacy route as an alias: matches the final authoritative `flow/openapi.yaml` contract and the previously reviewed `flow/neomarket-b2b.yaml` invoice contract while preserving compatibility.
+
+Decision: treat `flow/openapi.yaml` as authoritative for US-B2B-06, with the affected invoice create/accept endpoints matching the previously reviewed `flow/neomarket-b2b.yaml` contract. New invoices are created in `CREATED`, `POST /api/v1/invoices/{invoice_id}/accept` is the canonical route, and the old body-based accept route remains as a compatibility alias to the same service function. Partial acceptance, `accepted_items`, list/get/delete, and other US-B2B-07+ invoice behavior remain out of scope.
+
+# ADR: Invoice Creation Validation Layer
+
+Options considered:
+
+- Serializer/schema validation: most readable for structural payload checks such as missing `items`, but a poor fit for DB-backed SKU ownership and product status checks. Future non-HTTP callers could bypass the rule.
+- Route/view validation: readable in one endpoint, but future invoice API paths could accidentally skip ownership/status checks by calling lower-level creation logic directly.
+- Service/model layer validation: keeps ownership, deleted-product, and `MODERATED` status checks next to the invoice write. It has slightly more service code, but the lowest risk of bypass when future API paths are added.
+
+Decision: validate SKU ownership and product eligibility in the service/model layer, with route-local payload parsing only where needed to return canonical `code`/`message` errors instead of FastAPI `422`.
