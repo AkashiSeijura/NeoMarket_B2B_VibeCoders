@@ -1,6 +1,7 @@
 import logging
 import uuid
 from collections.abc import Sequence
+from dataclasses import dataclass
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
@@ -38,6 +39,14 @@ class ProductAlreadyDeletedError(Exception):
 
 class ModerationUnavailableError(Exception):
     pass
+
+
+@dataclass(frozen=True)
+class SellerProductListItem:
+    product: Product
+    skus_count: int
+    total_active_quantity: int
+    min_price: int | None
 
 
 def _product_query():
@@ -93,17 +102,66 @@ def get_public_product_by_id(db: Session, product_id: uuid.UUID) -> Product:
     return product
 
 
-def list_seller_products(db: Session, seller_id: uuid.UUID, limit: int = 20, offset: int = 0) -> tuple[list[Product], int]:
-    filters = (Product.seller_id == seller_id, Product.deleted.is_(False))
+def list_seller_products(
+    db: Session,
+    seller_id: uuid.UUID,
+    limit: int = 20,
+    offset: int = 0,
+    *,
+    product_status: ProductStatus | None = None,
+    search: str | None = None,
+    include_deleted: bool = False,
+) -> tuple[list[SellerProductListItem], int]:
+    filters = [Product.seller_id == seller_id]
+    if not include_deleted:
+        filters.append(Product.deleted.is_(False))
+    if product_status is not None:
+        filters.append(Product.status == product_status)
+
+    search_term = search.strip() if search else ""
+    if search_term:
+        filters.append(Product.title.ilike(f"%{search_term}%"))
+
     total_count = db.scalar(select(func.count(Product.id)).where(*filters)) or 0
-    products = db.scalars(
-        _product_query()
+
+    sku_aggregates = (
+        select(
+            SKU.product_id.label("product_id"),
+            func.count(SKU.id).label("skus_count"),
+            func.coalesce(func.sum(SKU.active_quantity), 0).label("total_active_quantity"),
+            func.min(SKU.price).label("min_price"),
+        )
+        .group_by(SKU.product_id)
+        .subquery()
+    )
+
+    rows = db.execute(
+        select(
+            Product,
+            func.coalesce(sku_aggregates.c.skus_count, 0).label("skus_count"),
+            func.coalesce(sku_aggregates.c.total_active_quantity, 0).label("total_active_quantity"),
+            sku_aggregates.c.min_price.label("min_price"),
+        )
+        .options(
+            selectinload(Product.images),
+        )
+        .outerjoin(sku_aggregates, sku_aggregates.c.product_id == Product.id)
         .where(*filters)
         .order_by(Product.id)
         .offset(offset)
         .limit(limit)
     ).all()
-    return list(products), total_count
+
+    products = [
+        SellerProductListItem(
+            product=row[0],
+            skus_count=int(row.skus_count or 0),
+            total_active_quantity=int(row.total_active_quantity or 0),
+            min_price=row.min_price,
+        )
+        for row in rows
+    ]
+    return products, total_count
 
 
 def list_catalog_products(
