@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from src.api.routes import (
+    fulfillment,
     invoices,
     moderation_events,
     products,
@@ -16,4 +17,5 @@ api_router.include_router(skus.router)
 api_router.include_router(invoices.router)
 api_router.include_router(reservations.router)
 api_router.include_router(moderation_events.router)
+api_router.include_router(fulfillment.router)
 

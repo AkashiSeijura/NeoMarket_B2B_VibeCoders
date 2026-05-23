@@ -588,3 +588,95 @@ Decision: keep the moderation business behavior stable and perform OpenAPI migra
 After the UUID migration, moderation HTTP request bodies must carry `product_id` as JSON strings because real clients cannot send Python `uuid.UUID` objects. Both moderation routes parse those strings into `uuid.UUID` instances for service and SQLAlchemy lookups, while processed-event JSON payloads, cached responses, legacy route responses, and B2C `PRODUCT_BLOCKED` events serialize product identifiers back to strings at the JSON boundary.
 
 Decision: keep moderation schemas and persistence UUID-aware, remove integer product ID parsing from moderation event routes, and update moderation tests to send `str(product.id)` in all JSON payloads. Moderation status transitions, idempotency behavior, service-key authentication, and B2C event behavior are unchanged.
+
+---
+
+# US-B2B-10 Summary
+
+US-B2B-10 is migrated to the final authoritative `flow/openapi.yaml` inventory fulfill contract. For the affected fulfill endpoint, this contract matches the previously reviewed `neomarket-b2b.yaml` inventory fulfill contract.
+
+Added canonical `POST /api/v1/inventory/fulfill` while keeping legacy `POST /api/v1/fulfill` on top of the stacked US-B2B-01 through US-B2B-09 changes. This slice depends on US-B2B-01 through US-B2B-09 until those changes are merged.
+
+Fulfill is a B2C service-to-service endpoint and authenticates only with `X-Service-Key == settings.b2c_to_b2b_key`, matching `flow/openapi.yaml`. Seller JWTs are not required and are not accepted as a substitute. Missing or invalid service keys return `401 {"code":"UNAUTHORIZED","message":"Authorization required"}`.
+
+The request shape follows the canonical flow field names:
+
+```json
+{
+  "order_id": "order-id",
+  "items": [
+    {"sku_id": "0fbd7d25-6f5b-4c3c-8c0e-78be4d56c1cc", "quantity": 2}
+  ]
+}
+```
+
+Route-local validation requires `order_id`, a non-empty `items` list, UUID-format string `sku_id`, and `quantity > 0`, returning canonical `400 INVALID_REQUEST` errors instead of FastAPI `422`. The route parses JSON string SKU ids into internal `uuid.UUID` values for service and SQLAlchemy lookups.
+
+Fulfill finalizes an existing delivered order/reservation by decreasing `reserved_quantity` only:
+
+- `reserved_quantity -= quantity`
+- `active_quantity` remains unchanged
+- `active_quantity + reserved_quantity` intentionally decreases because delivered goods have physically left stock
+- `flow/openapi.yaml` mentions `stock_quantity`; this codebase maps buyer-visible stock through `active_quantity`, and fulfill finalizes reserved stock by decreasing `reserved_quantity` only
+- no stock restore
+- no order creation/cancellation
+- no product moderation state changes
+- no stock acceptance or invoice events
+- no invoice `accepted_quantity` mutation
+
+Fulfill validates SKU existence and sufficient `reserved_quantity`; it does not require current catalog visibility. This follows the lifecycle assumption that fulfill acts on an already-created order/reservation and must still be able to complete if product visibility changed after checkout.
+
+Added `fulfilled_orders`, keyed by `order_id`, with `request_hash`, normalized `request_payload`, cached legacy success `response`, and `created_at`. The fulfilled order record is written in the same DB transaction as the reserved stock deductions. Replaying the same `order_id` with the same normalized payload returns without double deduction. The canonical route returns `200 {"order_id":"...","status":"FULFILLED","processed_at":"..."}` with `processed_at` derived from persisted `fulfilled_orders.created_at`, so replay returns the same timestamp. The legacy route keeps returning cached `200 {"ok": true}`. Reusing the same `order_id` with a different payload returns `409 CONFLICT`; the flow only defines same-order retry behavior, so this conflict behavior is an explicit implementation assumption.
+
+Fulfill is atomic across all requested items. The service claims the `order_id`, locks requested SKUs with `SELECT FOR UPDATE` where supported, validates every item, deducts all reserved quantities, stores the success response, and commits. If any item is missing or has insufficient reserved quantity, the transaction rolls back, no fulfilled-order success record is written, and no SKU is partially fulfilled. SQLite tests do not enforce row locks, but PostgreSQL uses the generated `SELECT FOR UPDATE`; deterministic tests cover rollback/all-or-nothing behavior.
+
+No US-B2B-11+ behavior is included: no seller list migration and no SKU delete behavior.
+
+# US-B2B-10 Validation
+
+Pytest proof command:
+
+```powershell
+python -m pytest tests/api/test_fulfillment.py -vv
+python -m pytest tests/api/test_products.py tests/api/test_skus.py tests/api/test_invoices.py tests/api/test_reservations.py tests/api/test_moderation_events.py tests/api/test_fulfillment.py -vv
+```
+
+Required scenario results:
+
+- `test_inventory_fulfill_returns_openapi_response`: passed
+- `test_inventory_fulfill_idempotent_replay_returns_same_response_without_double_deduction`: passed
+- `test_inventory_fulfill_missing_service_key_returns_401`: passed
+- `test_legacy_fulfill_route_still_returns_ok`: passed
+
+Additional safety results:
+
+- `test_fulfill_decreases_reserved_quantity`: passed
+- `test_active_quantity_unchanged`: passed
+- `test_idempotent_fulfill_no_double_deduction`: passed
+- `test_missing_service_key_returns_401`: passed
+- `test_same_order_id_with_different_payload_returns_409`: passed
+- `test_insufficient_reserved_quantity_rolls_back_all_items`: passed
+- `test_invalid_quantity_returns_400`: passed
+- `test_seller_jwt_without_service_key_returns_401`: passed
+
+Suite results:
+
+- `tests/api/test_fulfillment.py`: 12 passed
+- Required US-B2B-10 OpenAPI migration scenarios: 4 passed
+- `tests/api/test_products.py tests/api/test_skus.py tests/api/test_invoices.py tests/api/test_reservations.py tests/api/test_moderation_events.py tests/api/test_fulfillment.py`: 103 passed
+
+# ADR: Fulfill Idempotency by Order ID
+
+Options considered:
+
+- DB-backed `fulfilled_orders` table keyed by `order_id`: selected. It has moderate implementation complexity, but gives the lowest double-deduction risk on retries because the request hash, normalized payload, cached response, and successful fulfillment are persisted across process restarts.
+- `last_fulfilled_order` field on SKU: lower implementation complexity, but unsafe for multi-SKU orders and payload conflict detection. It cannot represent order-level idempotency cleanly and risks inconsistent retry behavior.
+- Checking `reserved_quantity` only: lowest implementation complexity, but not true idempotency. It cannot distinguish a legitimate retry from a conflicting request and can produce false success or double-deduction risk under concurrent/retried calls.
+
+Decision: use a persisted `fulfilled_orders` table. The service claims `order_id`, locks all requested SKUs with `SELECT FOR UPDATE` where supported, validates all items, deducts `reserved_quantity`, stores the cached success response, and commits in one transaction. Validation and stock conflicts roll back the idempotency row and stock changes, so failed fulfill attempts are not replay-cached.
+
+# ADR: Fulfillment UUID Request Boundary
+
+After the UUID migration, fulfillment HTTP request bodies must carry `sku_id` as JSON strings because real clients cannot send Python `uuid.UUID` objects. Both canonical `/api/v1/inventory/fulfill` and legacy `/api/v1/fulfill` parse those strings into `uuid.UUID` instances for service and SQLAlchemy lookups, while persisted idempotency payloads serialize SKU identifiers back to strings.
+
+Decision: keep fulfillment schemas, routing, and service logic UUID-aware, remove integer SKU parsing from fulfill normalization, and update fulfillment tests to send `str(sku.id)` in all JSON payloads. Fulfillment idempotency, service-key authentication, reserved stock deduction, active stock behavior, and all-or-nothing rollback behavior are unchanged.
