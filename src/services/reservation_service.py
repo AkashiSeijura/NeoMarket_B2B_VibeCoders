@@ -102,7 +102,7 @@ def _lock_skus(db: Session, sku_ids: list[uuid.UUID]) -> dict[uuid.UUID, SKU]:
 def _is_visible_catalog_sku(sku: SKU | None) -> bool:
     if sku is None or sku.product is None:
         return False
-    return sku.product.status == ProductStatus.MODERATED and sku.product.deleted is False
+    return sku.product.status == ProductStatus.MODERATED and sku.product.deleted is False and sku.deleted is False
 
 
 def _reserve_conflicts(items: list[dict[str, Any]], sku_map: dict[uuid.UUID, SKU]) -> list[dict[str, Any]]:

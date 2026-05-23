@@ -733,3 +733,61 @@ Options considered:
 - Raw SQL: efficient, but higher maintenance and less consistent with the existing ORM service style.
 
 Decision: use a grouped SQLAlchemy aggregate subquery over `SKU.product_id`, with an outer join from products so products without SKUs return `skus_count=0` and `total_active_quantity=0`.
+
+---
+
+# US-B2B-12 Summary
+
+US-B2B-12 SKU delete is migrated to the final authoritative `flow/openapi.yaml` contract. For the affected SKU delete endpoint, this contract matches the previously reviewed `neomarket-b2b.yaml` SKU delete contract.
+
+The seller-facing `DELETE /api/v1/skus/{id}` remains implemented on top of the stacked US-B2B-01 through US-B2B-11 changes. This PR depends on US-B2B-01 through US-B2B-11 until those changes are merged.
+
+The endpoint authenticates the seller from Bearer JWT claims and checks ownership through the parent product only. Missing SKUs and already-deleted SKUs return `404 {"code":"NOT_FOUND","message":"SKU not found"}`. Other sellers receive `403 NOT_OWNER`. `HARD_BLOCKED` parent products receive `403 FORBIDDEN` before active-reserve checks, including when the SKU also has reserves. SKUs with `reserved_quantity > 0` receive `409 CONFLICT` without mutation.
+
+Added a minimal `SKU.deleted` soft-delete flag and migration `0011_add_sku_deleted.py`. Successful deletes mark only `sku.deleted=true`; they do not physically delete the row and do not change `active_quantity`, `reserved_quantity`, reservation, fulfillment, invoice, or historical data. Successful SKU delete now returns `204 No Content` with an empty response body, superseding the old `200 {"ok": true}` behavior. Repeated delete returns 404 to avoid duplicate side effects.
+
+Side effects follow the required post-commit pattern. If the deleted SKU was the last non-deleted SKU on an `ON_MODERATION` product, the product returns to `CREATED` and a Moderation `DELETED` event is attempted after commit. If a `MODERATED` product SKU with positive `active_quantity` is deleted, a B2C `SKU_OUT_OF_STOCK` event is attempted after commit with a fresh UUIDv4 idempotency key. External sends are best-effort after the committed DB mutation; failures are logged and do not roll back the delete.
+
+Deleted-SKU filtering is intentionally narrow: B2C catalog product visibility and SKU serialization ignore deleted SKUs, reserve treats deleted SKUs as unavailable, and seller-list SKU aggregates count only non-deleted SKUs.
+
+# US-B2B-12 Validation
+
+Pytest proof commands:
+
+```powershell
+python -m pytest tests/api/test_skus.py -vv -k "delete_sku_succeeds or delete_sku_with_active_reserves_returns_409 or last_sku_on_moderation_transitions_product_to_created or delete_sku_hard_blocked_product_returns_403 or sku_out_of_stock_event_on_moderated_product"
+python -m pytest tests/api/test_skus.py -vv
+python -m pytest tests/api/test_products.py tests/api/test_skus.py tests/api/test_invoices.py tests/api/test_reservations.py tests/api/test_moderation_events.py tests/api/test_fulfillment.py -vv
+```
+
+Required scenario results:
+
+- `test_delete_sku_succeeds`: passed
+- `test_delete_sku_with_active_reserves_returns_409`: passed
+- `test_last_sku_on_moderation_transitions_product_to_created`: passed
+- `test_delete_sku_hard_blocked_product_returns_403`: passed
+- `test_sku_out_of_stock_event_on_moderated_product`: passed
+
+Additional safety coverage:
+
+- already-deleted SKU returns 404 and sends no events
+- other seller cannot delete SKU
+- `active_quantity == 0` on a moderated product does not emit `SKU_OUT_OF_STOCK`
+- deleted SKUs are filtered from B2C catalog, reserve, and seller-list aggregates
+- adding a new SKU after deleting the last non-deleted SKU starts moderation again
+
+Suite results:
+
+- Required US-B2B-12 scenarios: 5 passed, 19 deselected
+- `tests/api/test_skus.py`: 24 passed
+- `tests/api/test_products.py tests/api/test_skus.py tests/api/test_invoices.py tests/api/test_reservations.py tests/api/test_moderation_events.py tests/api/test_fulfillment.py`: 114 passed
+
+# ADR: SKU Delete Guardrails and Soft Delete
+
+Options considered:
+
+- Separate early guardrail checks: selected. It keeps ownership, `HARD_BLOCKED`, and active-reserve precedence explicit and lowest risk, especially because `HARD_BLOCKED` must win over reserve conflicts.
+- Single `validate_deletion` helper: compact, but it makes the required order easier to obscure and increases the chance of future changes returning the wrong error.
+- Serializer/schema checks: wrong layer for DB-backed ownership, status, deleted-state, and reserve rules.
+
+Decision: keep delete validation in the SKU service as ordered early checks, then soft-delete and commit before best-effort event sends.
