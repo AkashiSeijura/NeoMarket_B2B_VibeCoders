@@ -8,7 +8,7 @@ from src.schemas.common import APIModel
 
 class InvoiceItemCreate(APIModel):
     sku_id: uuid.UUID = Field(validation_alias=AliasChoices("sku_id", "skuId"))
-    quantity: int = Field(gt=0)
+    quantity: int
 
 
 class InvoiceCreate(APIModel):
@@ -33,3 +33,17 @@ class InvoiceRead(APIModel):
     created_at: datetime = Field(serialization_alias="createdAt")
     items: list[InvoiceItemRead]
 
+
+class InvoiceCreateItemRead(APIModel):
+    sku_id: uuid.UUID
+    sku_name: str
+    quantity: int
+    accepted_quantity: int | None = None
+
+
+class InvoiceCreateRead(APIModel):
+    id: int
+    seller_id: str
+    status: str
+    created_at: datetime
+    items: list[InvoiceCreateItemRead]
