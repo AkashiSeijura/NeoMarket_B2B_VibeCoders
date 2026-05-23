@@ -65,6 +65,33 @@ def get_product_by_id(db: Session, product_id: uuid.UUID) -> Product:
     return product
 
 
+def get_seller_product_by_id(db: Session, product_id: uuid.UUID, seller_id: uuid.UUID) -> Product:
+    product = db.scalars(
+        _product_query().where(
+            Product.id == product_id,
+            Product.seller_id == seller_id,
+            Product.deleted.is_(False),
+        )
+    ).first()
+    if product is None:
+        raise NotFoundError(f"Product with id={product_id} not found")
+    return product
+
+
+def get_public_product_by_id(db: Session, product_id: uuid.UUID) -> Product:
+    product = db.scalars(
+        _product_query().where(
+            Product.id == product_id,
+            Product.status == ProductStatus.MODERATED,
+            Product.deleted.is_(False),
+            Product.skus.any(SKU.active_quantity > 0),
+        )
+    ).first()
+    if product is None:
+        raise NotFoundError(f"Product with id={product_id} not found")
+    return product
+
+
 def list_seller_products(db: Session, seller_id: uuid.UUID, limit: int = 20, offset: int = 0) -> tuple[list[Product], int]:
     filters = (Product.seller_id == seller_id, Product.deleted.is_(False))
     total_count = db.scalar(select(func.count(Product.id)).where(*filters)) or 0

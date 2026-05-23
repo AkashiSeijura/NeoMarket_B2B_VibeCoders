@@ -1,8 +1,9 @@
 from datetime import datetime
 from enum import Enum
+from typing import Any
 import uuid
 
-from sqlalchemy import Boolean, DateTime, Enum as SqlEnum, ForeignKey, Integer, String, Text, false, func
+from sqlalchemy import Boolean, DateTime, Enum as SqlEnum, ForeignKey, Integer, JSON, String, Text, false, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.db.types import GUID
@@ -33,6 +34,8 @@ class Product(Base):
     seller_id: Mapped[uuid.UUID] = mapped_column(GUID(), nullable=False)
     category_id: Mapped[uuid.UUID] = mapped_column(GUID(), ForeignKey("categories.id", ondelete="RESTRICT"))
     deleted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=false())
+    blocking_reason: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    field_reports: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True, default=list)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -44,6 +47,10 @@ class Product(Base):
         onupdate=func.now(),
         nullable=False,
     )
+
+    @property
+    def blocked(self) -> bool:
+        return self.status in {ProductStatus.BLOCKED, ProductStatus.HARD_BLOCKED}
 
     category = relationship("Category", back_populates="products")
     images = relationship(
