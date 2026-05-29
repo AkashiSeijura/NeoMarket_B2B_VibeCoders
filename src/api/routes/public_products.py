@@ -1,10 +1,11 @@
 import hmac
 import uuid
 
-from fastapi import APIRouter, Depends, Header, status
+from fastapi import APIRouter, Depends, Header, Query, Request, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
+from src.api.catalog_params import invalid_request, parse_public_catalog_params
 from src.api.deps import unauthorized_response
 from src.core.config import settings
 from src.db.session import get_db
@@ -27,24 +28,24 @@ def require_public_service_key(
     return None
 
 
-def _invalid_request(message: str) -> JSONResponse:
-    return JSONResponse(status_code=400, content={"code": "INVALID_REQUEST", "message": message})
-
-
 def _parse_product_ids(raw_ids: list[str]) -> list[uuid.UUID] | JSONResponse:
     product_ids: list[uuid.UUID] = []
     for raw_id in raw_ids:
         try:
             product_ids.append(uuid.UUID(raw_id))
         except ValueError:
-            return _invalid_request("product_ids must contain valid product ids")
+            return invalid_request("product_ids must contain valid product ids")
     return product_ids
 
 
 @router.get("", response_model=ProductPublicPaginatedResponse, status_code=status.HTTP_200_OK)
 def list_public_products_endpoint(
+    request: Request,
     limit: int = 20,
     offset: int = 0,
+    q: str | None = Query(default=None),
+    search: str | None = Query(default=None),
+    sort: str | None = Query(default=None),
     auth_error: JSONResponse | None = Depends(require_public_service_key),
     db: Session = Depends(get_db),
 ) -> ProductPublicPaginatedResponse | JSONResponse:
@@ -53,10 +54,18 @@ def list_public_products_endpoint(
 
     bounded_limit = min(max(limit, 1), 100)
     bounded_offset = max(offset, 0)
+    public_params = parse_public_catalog_params(request.query_params, q=q, search=search, sort=sort)
+    if isinstance(public_params, JSONResponse):
+        return public_params
+
     products, total_count = list_public_catalog_products(
         db,
         limit=bounded_limit,
         offset=bounded_offset,
+        search=public_params.search,
+        category_id=public_params.category_id,
+        attribute_filters=public_params.attribute_filters,
+        sort=public_params.sort,
     )
     return ProductPublicPaginatedResponse(
         items=[ProductPublicShortRead.model_validate(product) for product in products],

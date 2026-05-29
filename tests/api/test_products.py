@@ -1175,6 +1175,84 @@ def test_public_catalog_response_has_no_seller_only_fields(client, db_session: S
         assert_key_absent(body, sensitive_key)
 
 
+def test_search_returns_matching_products(client, db_session: Session, test_product_factory):
+    category = test_product_factory(status=ProductStatus.MODERATED, title="iPhone 15 Pro")
+    create_existing_sku(db_session, category, active_quantity=4)
+
+    description_match = test_product_factory(status=ProductStatus.MODERATED, title="Coffee Grinder")
+    description_match.description = "Fresh espresso accessory"
+    create_existing_sku(db_session, description_match, active_quantity=3)
+
+    non_matching = test_product_factory(status=ProductStatus.MODERATED, title="Android Phone")
+    create_existing_sku(db_session, non_matching, active_quantity=5)
+
+    another_category = test_product_factory(status=ProductStatus.MODERATED, title="iPhone Case")
+    create_existing_sku(db_session, another_category, active_quantity=2)
+    db_session.commit()
+
+    title_response = client.get(
+        "/api/v1/products",
+        headers=public_headers(),
+        params={
+            "search": "iphone",
+            "category_id": str(category.category_id),
+            "filters[Brand]": "Apple",
+        },
+    )
+    description_response = client.get("/api/v1/products", headers=public_headers(), params={"search": "espresso"})
+
+    assert title_response.status_code == 200
+    title_body = title_response.json()
+    assert title_body["total_count"] == 1
+    assert [item["id"] for item in title_body["items"]] == [str(category.id)]
+
+    assert description_response.status_code == 200
+    description_body = description_response.json()
+    assert description_body["total_count"] == 1
+    assert [item["id"] for item in description_body["items"]] == [str(description_match.id)]
+
+
+def test_short_query_returns_400(client):
+    response = client.get("/api/v1/products", headers=public_headers(), params={"search": "ab"})
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "code": "INVALID_REQUEST",
+        "message": "Search query must be at least 3 characters",
+    }
+
+
+def test_special_chars_do_not_break_query(client, db_session: Session, test_product_factory):
+    literal_percent = test_product_factory(status=ProductStatus.MODERATED, title="iPhone%15")
+    create_existing_sku(db_session, literal_percent, active_quantity=4)
+    wildcard_candidate = test_product_factory(status=ProductStatus.MODERATED, title="iPhoneX15")
+    create_existing_sku(db_session, wildcard_candidate, active_quantity=4)
+    quoted = test_product_factory(status=ProductStatus.MODERATED, title="кофе' зерновой")
+    create_existing_sku(db_session, quoted, active_quantity=4)
+
+    percent_response = client.get("/api/v1/products", headers=public_headers(), params={"search": "iPhone%15"})
+    quote_response = client.get("/api/v1/products", headers=public_headers(), params={"search": "кофе'"})
+    underscore_response = client.get("/api/v1/products", headers=public_headers(), params={"search": "foo_bar"})
+
+    assert percent_response.status_code == 200
+    assert [item["id"] for item in percent_response.json()["items"]] == [str(literal_percent.id)]
+    assert quote_response.status_code == 200
+    assert [item["id"] for item in quote_response.json()["items"]] == [str(quoted.id)]
+    assert underscore_response.status_code == 200
+    assert underscore_response.json()["items"] == []
+
+
+def test_empty_results_returns_200(client, db_session: Session, test_product_factory):
+    product = test_product_factory(status=ProductStatus.MODERATED, title="iPhone 15 Pro")
+    create_existing_sku(db_session, product, active_quantity=4)
+
+    response = client.get("/api/v1/products", headers=public_headers(), params={"search": "does-not-exist"})
+
+    assert response.status_code == 200
+    assert response.json()["items"] == []
+    assert response.json()["total_count"] == 0
+
+
 def test_public_batch_returns_visible_full_public_products(client, db_session: Session, test_product_factory):
     product = test_product_factory(status=ProductStatus.MODERATED)
     active_sku = create_existing_sku(
