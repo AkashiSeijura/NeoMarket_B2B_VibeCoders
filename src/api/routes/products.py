@@ -1,10 +1,11 @@
 import re
 import uuid
 
-from fastapi import APIRouter, Depends, Header, Query, Response, status
+from fastapi import APIRouter, Depends, Header, Query, Request, Response, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
+from src.api.catalog_params import parse_public_catalog_params
 from src.api.deps import (
     CurrentSeller,
     ProductDetailAccess,
@@ -117,11 +118,14 @@ def _seller_product_list_item(item) -> SellerProductListItemRead:
 
 @router.get("", response_model=SellerProductListRead | ProductPublicPaginatedResponse, status_code=status.HTTP_200_OK)
 def list_products_endpoint(
+    request: Request,
     limit: int = 20,
     offset: int = 0,
     ids: list[str] | None = Query(default=None),
     product_status: str | None = Query(default=None, alias="status"),
+    q: str | None = Query(default=None),
     search: str | None = Query(default=None),
+    sort: str | None = Query(default=None),
     include_deleted: bool = Query(default=False),
     service_key: str | None = Header(default=None, alias="X-Service-Key"),
     token: str | None = Depends(oauth2_scheme),
@@ -139,10 +143,18 @@ def list_products_endpoint(
             return product_ids
 
         if product_ids is None:
+            public_params = parse_public_catalog_params(request.query_params, q=q, search=search, sort=sort)
+            if isinstance(public_params, JSONResponse):
+                return public_params
+
             products, total_count = list_public_catalog_products(
                 db,
                 limit=bounded_limit,
                 offset=bounded_offset,
+                search=public_params.search,
+                category_id=public_params.category_id,
+                attribute_filters=public_params.attribute_filters,
+                sort=public_params.sort,
             )
         else:
             products = list_public_products_by_ids(db, product_ids)

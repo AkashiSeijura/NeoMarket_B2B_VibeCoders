@@ -3,7 +3,7 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from src.models import Category, Product, ProductCharacteristic, ProductImage, ProductStatus, SKU
@@ -94,7 +94,7 @@ def get_public_product_by_id(db: Session, product_id: uuid.UUID) -> Product:
             Product.id == product_id,
             Product.status == ProductStatus.MODERATED,
             Product.deleted.is_(False),
-            Product.skus.any(SKU.active_quantity > 0),
+            Product.skus.any(and_(SKU.active_quantity > 0, SKU.deleted.is_(False))),
         )
     ).first()
     if product is None:
@@ -171,6 +171,10 @@ def list_catalog_products(
     product_ids: Sequence[uuid.UUID] | None = None,
     limit: int = 20,
     offset: int = 0,
+    search: str | None = None,
+    category_id: uuid.UUID | None = None,
+    attribute_filters: dict[str, str] | None = None,
+    sort: str = "popularity",
 ) -> tuple[list[Product], int]:
     filters = [
         Product.status == ProductStatus.MODERATED,
@@ -179,9 +183,44 @@ def list_catalog_products(
     ]
     if product_ids is not None:
         filters.append(Product.id.in_(product_ids))
+    if category_id is not None:
+        filters.append(Product.category_id == category_id)
+
+    search_term = search.strip() if search else ""
+    if search_term:
+        pattern = f"%{_escape_like(search_term)}%"
+        filters.append(
+            or_(
+                Product.title.ilike(pattern, escape="\\"),
+                Product.description.ilike(pattern, escape="\\"),
+            )
+        )
+
+    for name, value in (attribute_filters or {}).items():
+        filters.append(
+            Product.characteristics.any(
+                and_(
+                    func.lower(ProductCharacteristic.name) == name.lower(),
+                    ProductCharacteristic.value == value,
+                )
+            )
+        )
 
     total_count = db.scalar(select(func.count(Product.id)).where(*filters)) or 0
-    query = _product_query().where(*filters).order_by(Product.id)
+    query = _product_query().where(*filters)
+    if sort == "new":
+        query = query.order_by(Product.created_at.desc(), Product.id)
+    elif sort in {"price_asc", "price_desc"}:
+        min_price = (
+            select(SKU.product_id.label("product_id"), func.min(SKU.price).label("min_price"))
+            .where(SKU.active_quantity > 0, SKU.deleted.is_(False))
+            .group_by(SKU.product_id)
+            .subquery()
+        )
+        query = query.join(min_price, min_price.c.product_id == Product.id)
+        query = query.order_by(min_price.c.min_price.desc() if sort == "price_desc" else min_price.c.min_price, Product.id)
+    else:
+        query = query.order_by(Product.id)
     if product_ids is None:
         query = query.offset(offset).limit(limit)
 
@@ -189,8 +228,25 @@ def list_catalog_products(
     return list(products), total_count
 
 
-def list_public_catalog_products(db: Session, *, limit: int = 20, offset: int = 0) -> tuple[list[Product], int]:
-    return list_catalog_products(db, limit=limit, offset=offset)
+def list_public_catalog_products(
+    db: Session,
+    *,
+    limit: int = 20,
+    offset: int = 0,
+    search: str | None = None,
+    category_id: uuid.UUID | None = None,
+    attribute_filters: dict[str, str] | None = None,
+    sort: str = "popularity",
+) -> tuple[list[Product], int]:
+    return list_catalog_products(
+        db,
+        limit=limit,
+        offset=offset,
+        search=search,
+        category_id=category_id,
+        attribute_filters=attribute_filters,
+        sort=sort,
+    )
 
 
 def list_public_products_by_ids(db: Session, product_ids: Sequence[uuid.UUID]) -> list[Product]:
@@ -207,6 +263,10 @@ def list_public_products_by_ids(db: Session, product_ids: Sequence[uuid.UUID]) -
             ordered_products.append(product)
             seen_ids.add(product_id)
     return ordered_products
+
+
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def create_product(db: Session, payload: ProductCreate, seller_id: uuid.UUID) -> Product:

@@ -791,3 +791,34 @@ Options considered:
 - Serializer/schema checks: wrong layer for DB-backed ownership, status, deleted-state, and reserve rules.
 
 Decision: keep delete validation in the SKU service as ordered early checks, then soft-delete and commit before best-effort event sends.
+
+---
+
+# US-CAT-02 Summary
+
+Implemented public catalog text search for B2C calls on `GET /api/v1/products` and `GET /api/v1/public/products`. The endpoints accept both flow `search` and OpenAPI-compatible `q`, validate search length (`3..255`) as `400 INVALID_REQUEST`, and filter only buyer-visible products: `MODERATED`, not deleted, and with at least one non-deleted in-stock SKU. Search matches escaped `ILIKE` against `title` and `description`, so `%`, `_`, and `'` are treated as user text and do not become SQL wildcards or break the query. Category and characteristic filters remain compatible with the B2C proxy parameters.
+
+# ADR: Product Search
+
+I considered SQL `LIKE`/`icontains`, `pg_trgm`, and full-text `SearchVector`. I chose escaped SQL `LIKE`/`icontains` for MVP because it has the lowest implementation complexity and works with the current SQLAlchemy service layer without new migrations or database extensions. `pg_trgm` would improve typo/fuzzy relevance, and `SearchVector` would give stronger ranking for larger catalogs, but both add setup and tuning cost. For this slice, relevance is enough when matching `title` or `description` and then applying the existing catalog sort.
+
+# US-CAT-02 Validation
+
+Pytest proof commands:
+
+```powershell
+$env:PYTEST_DISABLE_PLUGIN_AUTOLOAD='1'; python -m pytest tests/api/test_products.py -vv -k "search_returns_matching_products or short_query_returns_400 or special_chars_do_not_break_query or empty_results_returns_200"
+$env:PYTEST_DISABLE_PLUGIN_AUTOLOAD='1'; python -m pytest -q
+```
+
+Required scenario results:
+
+- `test_search_returns_matching_products`: passed
+- `test_short_query_returns_400`: passed
+- `test_special_chars_do_not_break_query`: passed
+- `test_empty_results_returns_200`: passed
+
+Suite results:
+
+- `tests/api/test_products.py`: 44 passed
+- full B2B suite: 122 passed
