@@ -886,3 +886,59 @@ Options considered:
 - Remove stock from schemas, strip stock keys at the route boundary, and leave persisted stock untouched in service code: selected. It matches the contract while preserving backward tolerance for clients that send extra keys.
 
 Decision: seller SKU create/edit APIs do not own stock mutation. Create initializes active stock to zero; edit preserves persisted stock. Tests that need in-stock SKUs must set stock directly in DB setup or use invoice/inventory flows.
+
+---
+
+# US-B2B-06 Arbiter Fix: Invoice UUIDs, Ownership, and Partial Acceptance
+
+External arbiter feedback addressed for invoice creation and acceptance against authoritative `flow/openapi.yaml` without editing `flow/*`.
+
+Invoice IDs and invoice item IDs are now UUID-backed in SQLAlchemy and exposed as UUID strings in JSON/path schemas. Invoice responses now include `seller_id`, `updated_at`, and item-level `id` plus `accepted_quantity`. New invoice items start with `accepted_quantity=0`.
+
+Invoice acceptance now authenticates the seller from JWT, checks `invoice.seller_id == JWT seller_id`, and returns the existing `403 NOT_OWNER` shape for cross-seller acceptance while preserving `404` for missing invoices. Both canonical `POST /api/v1/invoices/{invoice_id}/accept` and legacy `POST /api/v1/invoices/accept` delegate to the same ownership and acceptance service.
+
+Partial acceptance now supports `accepted_items` with `invoice_item_id` and `accepted_quantity`. Stock increases only by accepted quantities, unknown/duplicate items and invalid quantities are rejected, full acceptance sets `ACCEPTED`, partial positive acceptance sets `PARTIALLY_ACCEPTED`, and repeated acceptance of either accepted status remains protected by `409 CONFLICT`.
+
+Added migration `0012_invoice_uuid_partial_acceptance.py` to convert invoice and invoice item IDs to UUIDs, convert invoice seller IDs to UUIDs, add `PARTIALLY_ACCEPTED`/`CANCELLED` invoice statuses, and normalize `accepted_quantity` to non-null zero.
+
+# US-B2B-06 Arbiter Fix Validation
+
+Pytest proof commands:
+
+```powershell
+.\scripts\b2b-workflow.ps1 pretest
+python -m pytest tests/api/test_invoices.py -vv
+python -m pytest tests/api/test_products.py tests/api/test_skus.py tests/api/test_invoices.py tests/api/test_reservations.py tests/api/test_moderation_events.py tests/api/test_fulfillment.py -vv
+```
+
+Required scenario results:
+
+- `test_create_invoice_with_moderated_sku_returns_201`: passed
+- `test_empty_items_returns_400`: passed
+- `test_non_moderated_sku_returns_400`: passed
+- `test_others_sku_returns_403`: passed
+- `test_invoice_response_includes_seller_id_and_updated_at`: passed
+- `test_invoice_item_response_includes_id_and_accepted_quantity`: passed
+- `test_invoice_id_is_valid_uuid_not_int_string`: passed
+- `test_accept_invoice_checks_owner_and_returns_403_for_other_seller`: passed
+- `test_partial_acceptance_accepts_accepted_items_and_increases_stock_only_by_accepted_quantity`: passed
+- `test_partially_accepted_invoice_gets_partially_accepted_status`: passed
+- `test_full_accepted_invoice_gets_accepted_status`: passed
+- `test_double_acceptance_is_rejected_protected`: passed
+
+Suite results:
+
+- `.\scripts\b2b-workflow.ps1 pretest`: passed, no conflict markers found
+- `tests/api/test_invoices.py`: 16 passed
+- `tests/api/test_products.py tests/api/test_skus.py tests/api/test_invoices.py tests/api/test_reservations.py tests/api/test_moderation_events.py tests/api/test_fulfillment.py`: 130 passed
+
+# ADR: Invoice Acceptance Contract
+
+Options considered:
+
+- Keep integer invoice IDs and serialize them as strings: rejected because the arbiter and final OpenAPI require UUID format, not stringified integers.
+- Check invoice ownership only at create time: rejected because accept is a separate state-changing endpoint and must enforce seller ownership independently.
+- Accept the whole invoice when `accepted_items` is present: rejected because partial acceptance must increase stock by actual accepted quantities.
+- Convert invoice and invoice item IDs to UUIDs and implement item-level acceptance quantities in the existing invoice service: selected. It matches the final contract while preserving the existing create route, legacy accept alias, DB-backed tests, and double-acceptance protection.
+
+Decision: invoice creation remains `CREATED`; acceptance is seller-owned, UUID-addressed, and item-quantity based. `PARTIALLY_ACCEPTED` and `ACCEPTED` are terminal for this scoped flow, so repeat acceptance is rejected.
