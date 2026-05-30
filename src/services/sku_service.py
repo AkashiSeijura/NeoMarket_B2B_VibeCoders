@@ -131,8 +131,6 @@ def _apply_sku_updates(sku: SKU, payload: SKUUpdate) -> None:
         sku.article = payload.article
     if payload.image is not None:
         sku.image = payload.image
-    if payload.active_quantity is not None:
-        sku.active_quantity = payload.active_quantity
     if payload.characteristics is not None:
         sku.characteristics = [SKUCharacteristic(name=item.name, value=item.value) for item in payload.characteristics]
 
