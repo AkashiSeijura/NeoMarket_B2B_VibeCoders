@@ -834,7 +834,6 @@ Options considered:
 - Remove stock from the create schema and explicitly persist zero stock: selected. It matches the OpenAPI request contract, keeps backward tolerance for extra JSON fields, and guarantees SKU stock can only become positive through the invoice/inventory flows.
 
 Decision: remove `active_quantity` from `SKUCreate` and set `active_quantity=0` inside SKU creation service code.
-
 ---
 
 # US-B2B-02/03 Arbiter Fix: SKU Stock Contract
