@@ -97,7 +97,7 @@ def create_sku(db: Session, payload: SKUCreate, seller_id: uuid.UUID) -> SKU:
         discount=payload.discount,
         article=payload.article,
         image=image,
-        active_quantity=payload.active_quantity,
+        active_quantity=0,
         reserved_quantity=0,
     )
     sku.characteristics = [SKUCharacteristic(name=item.name, value=item.value) for item in payload.characteristics]

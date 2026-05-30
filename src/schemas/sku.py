@@ -18,11 +18,6 @@ class SKUCreate(APIModel):
     article: str | None = Field(default=None, max_length=255)
     image: str | None = Field(default=None, max_length=1024)
     images: list[ImagePayload] = Field(default_factory=list)
-    active_quantity: int = Field(
-        default=0,
-        ge=0,
-        validation_alias=AliasChoices("active_quantity", "activeQuantity"),
-    )
     characteristics: list[CharacteristicPayload] = Field(default_factory=list)
 
 

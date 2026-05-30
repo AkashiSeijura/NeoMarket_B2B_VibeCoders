@@ -159,6 +159,39 @@ def test_first_sku_transitions_product_to_on_moderation(
     db_session.refresh(product)
     assert product.status == ProductStatus.ON_MODERATION
     assert sku_count(db_session, product.id) == 1
+    persisted_sku = db_session.scalar(select(SKU).where(SKU.product_id == product.id))
+    assert persisted_sku.active_quantity == 0
+    assert len(moderation_requests) == 1
+
+
+@pytest.mark.parametrize("stock_field", ["active_quantity", "activeQuantity"])
+def test_client_cannot_set_active_quantity_through_sku_create(
+    client,
+    db_session: Session,
+    product_factory,
+    auth_headers,
+    moderation_requests,
+    stock_field: str,
+):
+    product = product_factory()
+
+    response = client.post(
+        "/api/v1/skus",
+        json=sku_payload(product.id, **{stock_field: 17}),
+        headers=auth_headers(SELLER_ID),
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["active_quantity"] == 0
+    assert body["stock_quantity"] == 0
+    assert body["reserved_quantity"] == 0
+
+    db_session.expire_all()
+    persisted_sku = db_session.scalar(select(SKU).where(SKU.product_id == product.id))
+    assert persisted_sku is not None
+    assert persisted_sku.active_quantity == 0
+    assert persisted_sku.reserved_quantity == 0
     assert len(moderation_requests) == 1
 
 
