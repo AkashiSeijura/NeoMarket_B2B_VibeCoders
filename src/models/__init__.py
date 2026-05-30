@@ -4,7 +4,7 @@ from src.models.fulfillment import FulfilledOrder
 from src.models.invoice import Invoice, InvoiceItem, InvoiceStatus
 from src.models.product import Product, ProductCharacteristic, ProductImage, ProductStatus
 from src.models.processed_moderation_event import ProcessedModerationEvent
-from src.models.reservation import ReserveOperation
+from src.models.reservation import ReserveOperation, UnreserveOperation
 from src.models.sku import SKU, SKUCharacteristic
 
 __all__ = [
@@ -22,5 +22,6 @@ __all__ = [
     "InvoiceItem",
     "InvoiceStatus",
     "ReserveOperation",
+    "UnreserveOperation",
 ]
 

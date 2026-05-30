@@ -11,6 +11,7 @@ from src.models import (
     ReserveOperation,
     SKU,
     SKUCharacteristic,
+    UnreserveOperation,
 )
 
 __all__ = [
@@ -26,5 +27,6 @@ __all__ = [
     "Invoice",
     "InvoiceItem",
     "ReserveOperation",
+    "UnreserveOperation",
 ]
 

@@ -5,7 +5,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from src.core.config import settings
-from src.models import Product, ProductImage, ProductStatus, ReserveOperation, SKU
+from src.models import Product, ProductImage, ProductStatus, ReserveOperation, SKU, UnreserveOperation
 
 
 SELLER_ID = "c3d4e5f6-a7b8-9012-cdef-123456789012"
@@ -69,6 +69,10 @@ def create_sku(
 
 def reserve_operation_count(db_session: Session) -> int:
     return db_session.scalar(select(func.count(ReserveOperation.idempotency_key))) or 0
+
+
+def unreserve_operation_count(db_session: Session) -> int:
+    return db_session.scalar(select(func.count(UnreserveOperation.order_id))) or 0
 
 
 def json_sku_id(sku: SKU) -> str:
@@ -291,6 +295,77 @@ def test_inventory_unreserve_returns_openapi_response(client, db_session: Sessio
     assert body["status"] == "UNRESERVED"
     assert datetime.fromisoformat(body["processed_at"])
     assert_sku_quantities(db_session, sku.id, active_quantity=5, reserved_quantity=3)
+    assert unreserve_operation_count(db_session) == 1
+
+
+def test_inventory_unreserve_idempotent_replay_returns_same_processed_at_without_double_restoring(
+    client,
+    db_session: Session,
+    category_factory,
+):
+    product = create_product(db_session, category_factory)
+    sku = create_sku(db_session, product, active_quantity=3, reserved_quantity=5)
+    payload = unreserve_payload(str(uuid4()), sku, 2)
+
+    first_response = client.post("/api/v1/inventory/unreserve", json=payload, headers=service_headers())
+    second_response = client.post("/api/v1/inventory/unreserve", json=payload, headers=service_headers())
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert second_response.json() == first_response.json()
+    assert datetime.fromisoformat(first_response.json()["processed_at"])
+    assert_sku_quantities(db_session, sku.id, active_quantity=5, reserved_quantity=3)
+    assert unreserve_operation_count(db_session) == 1
+
+
+def test_inventory_unreserve_same_order_id_different_items_returns_409(
+    client,
+    db_session: Session,
+    category_factory,
+):
+    product = create_product(db_session, category_factory)
+    sku = create_sku(db_session, product, active_quantity=3, reserved_quantity=5)
+    order_id = str(uuid4())
+
+    first_response = client.post(
+        "/api/v1/inventory/unreserve",
+        json=unreserve_payload(order_id, sku, 1),
+        headers=service_headers(),
+    )
+    second_response = client.post(
+        "/api/v1/inventory/unreserve",
+        json=unreserve_payload(order_id, sku, 2),
+        headers=service_headers(),
+    )
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 409
+    assert second_response.json() == {
+        "code": "CONFLICT",
+        "message": "order_id was already used with a different payload",
+    }
+    assert_sku_quantities(db_session, sku.id, active_quantity=4, reserved_quantity=4)
+    assert unreserve_operation_count(db_session) == 1
+
+
+def test_legacy_unreserve_idempotent_replay_does_not_double_restore(
+    client,
+    db_session: Session,
+    category_factory,
+):
+    product = create_product(db_session, category_factory)
+    sku = create_sku(db_session, product, active_quantity=3, reserved_quantity=5)
+    payload = unreserve_payload(str(uuid4()), sku, 2)
+
+    first_response = client.post("/api/v1/unreserve", json=payload, headers=service_headers())
+    second_response = client.post("/api/v1/unreserve", json=payload, headers=service_headers())
+
+    assert first_response.status_code == 200
+    assert second_response.status_code == 200
+    assert first_response.json() == {"ok": True}
+    assert second_response.json() == first_response.json()
+    assert_sku_quantities(db_session, sku.id, active_quantity=5, reserved_quantity=3)
+    assert unreserve_operation_count(db_session) == 1
 
 
 def test_legacy_reserve_and_unreserve_routes_keep_response_shapes(
