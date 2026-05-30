@@ -16,34 +16,56 @@ class InvoiceCreate(APIModel):
     items: list[InvoiceItemCreate]
 
 
+class InvoiceAcceptedItem(APIModel):
+    invoice_item_id: uuid.UUID = Field(validation_alias=AliasChoices("invoice_item_id", "invoiceItemId"))
+    accepted_quantity: int = Field(validation_alias=AliasChoices("accepted_quantity", "acceptedQuantity"))
+
+
 class InvoiceAccept(APIModel):
-    invoice_id: int = Field(validation_alias=AliasChoices("invoice_id", "invoiceId"))
+    invoice_id: uuid.UUID = Field(validation_alias=AliasChoices("invoice_id", "invoiceId"))
+    accepted_items: list[InvoiceAcceptedItem] | None = Field(
+        default=None,
+        validation_alias=AliasChoices("accepted_items", "acceptedItems"),
+    )
+
+
+class InvoiceAcceptRequest(APIModel):
+    accepted_items: list[InvoiceAcceptedItem] | None = Field(
+        default=None,
+        validation_alias=AliasChoices("accepted_items", "acceptedItems"),
+    )
 
 
 class InvoiceItemRead(APIModel):
-    sku_id: uuid.UUID = Field(serialization_alias="skuId")
+    id: uuid.UUID
+    sku_id: uuid.UUID
     quantity: int
+    accepted_quantity: int
 
 
 class InvoiceRead(APIModel):
-    id: int
+    id: uuid.UUID
+    seller_id: uuid.UUID
     reference: str | None = None
     status: str
-    accepted_at: datetime | None = Field(default=None, serialization_alias="acceptedAt")
-    created_at: datetime = Field(serialization_alias="createdAt")
+    accepted_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
     items: list[InvoiceItemRead]
 
 
 class InvoiceCreateItemRead(APIModel):
+    id: uuid.UUID
     sku_id: uuid.UUID
     sku_name: str
     quantity: int
-    accepted_quantity: int | None = None
+    accepted_quantity: int
 
 
 class InvoiceCreateRead(APIModel):
-    id: int
-    seller_id: str
+    id: uuid.UUID
+    seller_id: uuid.UUID
     status: str
     created_at: datetime
+    updated_at: datetime
     items: list[InvoiceCreateItemRead]

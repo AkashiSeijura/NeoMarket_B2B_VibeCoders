@@ -1,11 +1,13 @@
-from fastapi import APIRouter, Depends, Request, status
+import uuid
+
+from fastapi import APIRouter, Body, Depends, Request, status
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError as PydanticValidationError
 from sqlalchemy.orm import Session
 
 from src.api.deps import CurrentSeller, get_current_seller
 from src.db.session import get_db
-from src.schemas.invoice import InvoiceAccept, InvoiceCreate, InvoiceCreateRead, InvoiceRead
+from src.schemas.invoice import InvoiceAccept, InvoiceAcceptRequest, InvoiceCreate, InvoiceRead
 from src.services.errors import NotFoundError, ValidationError
 from src.services.invoice_service import InvoiceOwnerError, accept_invoice, create_invoice
 
@@ -43,12 +45,12 @@ async def _parse_invoice_create_payload(request: Request) -> InvoiceCreate | JSO
         return _invalid_request("Invalid invoice payload")
 
 
-@router.post("", response_model=InvoiceCreateRead, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=InvoiceRead, status_code=status.HTTP_201_CREATED)
 async def create_invoice_endpoint(
     request: Request,
     current_seller: CurrentSeller | JSONResponse = Depends(get_current_seller),
     db: Session = Depends(get_db),
-) -> InvoiceCreateRead | JSONResponse:
+) -> InvoiceRead | JSONResponse:
     if isinstance(current_seller, JSONResponse):
         return current_seller
 
@@ -66,11 +68,41 @@ async def create_invoice_endpoint(
         return _error(403, "NOT_OWNER", str(exc))
 
 
+def _not_owner(message: str) -> JSONResponse:
+    return _error(403, "NOT_OWNER", message)
+
+
 @router.post("/accept", response_model=InvoiceRead, status_code=status.HTTP_200_OK)
-def accept_invoice_endpoint(payload: InvoiceAccept, db: Session = Depends(get_db)) -> InvoiceRead:
-    return accept_invoice(db, payload.invoice_id)
+def accept_invoice_endpoint(
+    payload: InvoiceAccept,
+    current_seller: CurrentSeller | JSONResponse = Depends(get_current_seller),
+    db: Session = Depends(get_db),
+) -> InvoiceRead | JSONResponse:
+    if isinstance(current_seller, JSONResponse):
+        return current_seller
+
+    try:
+        return accept_invoice(
+            db,
+            payload.invoice_id,
+            current_seller.seller_id,
+            InvoiceAcceptRequest(accepted_items=payload.accepted_items),
+        )
+    except InvoiceOwnerError as exc:
+        return _not_owner(str(exc))
 
 
 @router.post("/{invoice_id}/accept", response_model=InvoiceRead, status_code=status.HTTP_200_OK)
-def accept_invoice_path_endpoint(invoice_id: int, db: Session = Depends(get_db)) -> InvoiceRead:
-    return accept_invoice(db, invoice_id)
+def accept_invoice_path_endpoint(
+    invoice_id: uuid.UUID,
+    payload: InvoiceAcceptRequest | None = Body(default=None),
+    current_seller: CurrentSeller | JSONResponse = Depends(get_current_seller),
+    db: Session = Depends(get_db),
+) -> InvoiceRead | JSONResponse:
+    if isinstance(current_seller, JSONResponse):
+        return current_seller
+
+    try:
+        return accept_invoice(db, invoice_id, current_seller.seller_id, payload)
+    except InvoiceOwnerError as exc:
+        return _not_owner(str(exc))

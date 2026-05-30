@@ -11,15 +11,17 @@ from src.models.base import Base
 
 class InvoiceStatus(str, Enum):
     CREATED = "CREATED"
+    PARTIALLY_ACCEPTED = "PARTIALLY_ACCEPTED"
     ACCEPTED = "ACCEPTED"
+    CANCELLED = "CANCELLED"
 
 
 class Invoice(Base):
     __tablename__ = "invoices"
 
-    id: Mapped[int] = mapped_column(primary_key=True)
+    id: Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=uuid.uuid4)
     reference: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    seller_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    seller_id: Mapped[uuid.UUID] = mapped_column(GUID(), nullable=False)
     status: Mapped[InvoiceStatus] = mapped_column(
         SqlEnum(InvoiceStatus, name="invoice_status"),
         nullable=False,
@@ -44,11 +46,11 @@ class Invoice(Base):
 class InvoiceItem(Base):
     __tablename__ = "invoice_items"
 
-    id: Mapped[int] = mapped_column(primary_key=True)
-    invoice_id: Mapped[int] = mapped_column(ForeignKey("invoices.id", ondelete="CASCADE"))
+    id: Mapped[uuid.UUID] = mapped_column(GUID(), primary_key=True, default=uuid.uuid4)
+    invoice_id: Mapped[uuid.UUID] = mapped_column(GUID(), ForeignKey("invoices.id", ondelete="CASCADE"))
     sku_id: Mapped[uuid.UUID] = mapped_column(GUID(), ForeignKey("skus.id", ondelete="RESTRICT"))
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
-    accepted_quantity: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    accepted_quantity: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     invoice = relationship("Invoice", back_populates="items")
     sku = relationship("SKU", back_populates="invoice_items")
