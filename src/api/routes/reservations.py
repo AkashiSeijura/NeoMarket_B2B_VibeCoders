@@ -13,6 +13,7 @@ from src.services.reservation_service import (
     IdempotencyConflictError,
     ReservationConflictError,
     UnreserveConflictError,
+    UnreserveIdempotencyConflictError,
     reserve_skus,
     unreserve_skus,
 )
@@ -197,12 +198,14 @@ async def unreserve_endpoint(
     payload = await _parse_unreserve_payload(request)
     if isinstance(payload, JSONResponse):
         return payload
-    _, items = payload
+    order_id, items = payload
 
     try:
-        return unreserve_skus(db, items)
+        return unreserve_skus(db, order_id, items)
     except UnreserveConflictError:
         return _error(409, "CONFLICT", "Insufficient reserved quantity")
+    except UnreserveIdempotencyConflictError as exc:
+        return _error(409, "CONFLICT", str(exc))
 
 
 @router.post(
@@ -225,6 +228,8 @@ async def inventory_unreserve_endpoint(
     order_id, items = payload
 
     try:
-        return unreserve_skus(db, items, order_id=order_id)
+        return unreserve_skus(db, order_id, items, canonical=True)
     except UnreserveConflictError:
         return _error(409, "CONFLICT", "Insufficient reserved quantity")
+    except UnreserveIdempotencyConflictError as exc:
+        return _error(409, "CONFLICT", str(exc))

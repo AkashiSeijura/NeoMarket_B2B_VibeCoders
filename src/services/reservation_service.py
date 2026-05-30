@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
-from src.models import ProductStatus, ReserveOperation, SKU
+from src.models import ProductStatus, ReserveOperation, SKU, UnreserveOperation
 from src.services.b2c_service import send_sku_out_of_stock_event
 
 logger = logging.getLogger(__name__)
@@ -26,6 +26,10 @@ class IdempotencyConflictError(Exception):
 
 
 class UnreserveConflictError(Exception):
+    pass
+
+
+class UnreserveIdempotencyConflictError(Exception):
     pass
 
 
@@ -58,6 +62,16 @@ def _normalized_reserve_payload(
     return payload
 
 
+def _normalized_order_items_payload(order_id: str, items: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "order_id": order_id,
+        "items": [
+            {"sku_id": str(item["sku_id"]), "quantity": item["quantity"]}
+            for item in items
+        ],
+    }
+
+
 def _request_hash(payload: dict[str, Any]) -> str:
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
@@ -77,6 +91,14 @@ def _canonical_reserve_response(operation: ReserveOperation, order_id: str) -> d
     }
 
 
+def _canonical_unreserve_response(operation: UnreserveOperation) -> dict[str, Any]:
+    return {
+        "order_id": operation.order_id,
+        "status": "UNRESERVED",
+        "processed_at": _timestamp(operation.created_at),
+    }
+
+
 def _cached_response_or_conflict(
     operation: ReserveOperation,
     request_hash: str,
@@ -86,6 +108,19 @@ def _cached_response_or_conflict(
         raise IdempotencyConflictError("idempotency_key was already used with a different payload")
     if order_id is not None:
         return _canonical_reserve_response(operation, order_id)
+    return operation.response
+
+
+def _cached_unreserve_response_or_conflict(
+    operation: UnreserveOperation,
+    request_hash: str,
+    *,
+    canonical: bool = False,
+) -> dict[str, Any]:
+    if operation.request_hash != request_hash:
+        raise UnreserveIdempotencyConflictError("order_id was already used with a different payload")
+    if canonical:
+        return _canonical_unreserve_response(operation)
     return operation.response
 
 
@@ -215,10 +250,37 @@ def reserve_skus(
 
 def unreserve_skus(
     db: Session,
+    order_id: str,
     items: list[dict[str, Any]],
-    order_id: str | None = None,
+    *,
+    canonical: bool = False,
 ) -> dict[str, Any]:
     normalized_items = _normalized_items(items)
+    normalized_payload = _normalized_order_items_payload(order_id, normalized_items)
+    request_hash = _request_hash(normalized_payload)
+
+    existing_operation = db.get(UnreserveOperation, order_id)
+    if existing_operation is not None:
+        return _cached_unreserve_response_or_conflict(existing_operation, request_hash, canonical=canonical)
+
+    response = {"ok": True}
+    operation = UnreserveOperation(
+        order_id=order_id,
+        request_hash=request_hash,
+        request_payload=normalized_payload,
+        response=response,
+    )
+    db.add(operation)
+
+    try:
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        existing_operation = db.get(UnreserveOperation, order_id)
+        if existing_operation is None:
+            raise UnreserveIdempotencyConflictError("order_id is currently being processed")
+        return _cached_unreserve_response_or_conflict(existing_operation, request_hash, canonical=canonical)
+
     sku_ids = [item["sku_id"] for item in normalized_items]
     sku_map = _lock_skus(db, sku_ids)
 
@@ -235,10 +297,7 @@ def unreserve_skus(
         sku.reserved_quantity -= quantity
 
     db.commit()
-    if order_id is not None:
-        return {
-            "order_id": order_id,
-            "status": "UNRESERVED",
-            "processed_at": _timestamp(datetime.now(timezone.utc)),
-        }
-    return {"ok": True}
+    if canonical:
+        db.refresh(operation)
+        return _canonical_unreserve_response(operation)
+    return response
