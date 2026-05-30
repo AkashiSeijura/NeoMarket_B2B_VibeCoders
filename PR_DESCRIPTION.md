@@ -834,3 +834,56 @@ Options considered:
 - Remove stock from the create schema and explicitly persist zero stock: selected. It matches the OpenAPI request contract, keeps backward tolerance for extra JSON fields, and guarantees SKU stock can only become positive through the invoice/inventory flows.
 
 Decision: remove `active_quantity` from `SKUCreate` and set `active_quantity=0` inside SKU creation service code.
+
+---
+
+# US-B2B-02/03 Arbiter Fix: SKU Stock Contract
+
+External arbiter feedback addressed for both SKU create and SKU edit: seller-facing `POST /api/v1/skus`, `PUT /api/v1/skus/{id}`, `PATCH /api/v1/skus/{id}`, and legacy `PUT /api/v1/skus` no longer accept stock as part of their input contract. `SKUCreate` and `SKUUpdate` do not define `active_quantity` or `activeQuantity`; client-supplied stock keys are stripped at the request boundary and cannot affect persisted stock.
+
+New SKUs created through seller SKU APIs explicitly start with `active_quantity=0` and `reserved_quantity=0`. SKU edits update only editable descriptive/price fields and characteristics; they do not read or mutate `active_quantity`, preserve `reserved_quantity`, and preserve `product_id`. Stock changes remain owned by invoices/inventory flows. SKU response schemas still expose `active_quantity`, `reserved_quantity`, and `stock_quantity` as output fields.
+
+Existing accepted behavior is preserved: first SKU creation moves `CREATED` products to `ON_MODERATION`, create/edit Moderation events are still emitted, `HARD_BLOCKED` products still return `403`, ownership checks remain service-level, and UUID identifiers remain unchanged.
+
+# US-B2B-02/03 Arbiter Fix Validation
+
+Pytest proof commands:
+
+```powershell
+.\scripts\b2b-workflow.ps1 pretest
+python -m pytest tests/api/test_skus.py -vv
+python -m pytest tests/api/test_products.py tests/api/test_skus.py tests/api/test_invoices.py tests/api/test_reservations.py tests/api/test_moderation_events.py tests/api/test_fulfillment.py -vv
+```
+
+Required scenario results:
+
+- `test_first_sku_transitions_product_to_on_moderation`: passed
+- `test_client_cannot_set_active_quantity_through_sku_create[active_quantity]`: passed
+- `test_client_cannot_set_active_quantity_through_sku_create[activeQuantity]`: passed
+- `test_first_sku_emits_created_event_to_moderation`: passed
+- `test_second_sku_no_state_change`: passed
+- `test_add_sku_to_hard_blocked_returns_403`: passed
+- `test_patch_moderated_product_returns_to_on_moderation`: passed
+- `test_patch_blocked_product_returns_to_on_moderation`: passed
+- `test_patch_sku_alias_updates_sku`: passed
+- `test_legacy_put_sku_edit_route_remains_supported`: passed
+- `test_client_cannot_set_active_quantity_through_sku_update[active_quantity]`: passed
+- `test_client_cannot_set_active_quantity_through_sku_update[activeQuantity]`: passed
+- `test_patch_hard_blocked_returns_403`: passed
+- `test_patch_others_product_returns_403`: passed
+
+Suite results:
+
+- `.\scripts\b2b-workflow.ps1 pretest`: passed, no conflict markers found
+- `tests/api/test_skus.py`: 28 passed
+- `tests/api/test_products.py tests/api/test_skus.py tests/api/test_invoices.py tests/api/test_reservations.py tests/api/test_moderation_events.py tests/api/test_fulfillment.py`: 122 passed
+
+# ADR: SKU Stock Mutation Boundary
+
+Options considered:
+
+- Keep accepting `active_quantity` on SKU create/edit: rejected because it lets sellers bypass invoice/inventory stock flows and contradicts the reviewed contract.
+- Reject stock keys with `400`: valid strict-contract behavior, but larger than the current API boundary pattern, which strips ignored ownership/reservation fields before validation.
+- Remove stock from schemas, strip stock keys at the route boundary, and leave persisted stock untouched in service code: selected. It matches the contract while preserving backward tolerance for clients that send extra keys.
+
+Decision: seller SKU create/edit APIs do not own stock mutation. Create initializes active stock to zero; edit preserves persisted stock. Tests that need in-stock SKUs must set stock directly in DB setup or use invoice/inventory flows.

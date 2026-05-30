@@ -60,6 +60,8 @@ async def _parse_sku_create_payload(request: Request) -> SKUCreate | JSONRespons
     payload_data = dict(body)
     payload_data.pop("seller_id", None)
     payload_data.pop("sellerId", None)
+    payload_data.pop("active_quantity", None)
+    payload_data.pop("activeQuantity", None)
 
     try:
         return SKUCreate.model_validate(payload_data)
@@ -83,6 +85,8 @@ async def _parse_sku_update_payload(request: Request, sku_id: uuid.UUID | None =
     payload_data.pop("productId", None)
     payload_data.pop("reserved_quantity", None)
     payload_data.pop("reservedQuantity", None)
+    payload_data.pop("active_quantity", None)
+    payload_data.pop("activeQuantity", None)
 
     if sku_id is not None:
         payload_data["id"] = sku_id

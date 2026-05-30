@@ -504,6 +504,42 @@ def test_legacy_put_sku_edit_route_remains_supported(
     assert moderation_requests == []
 
 
+@pytest.mark.parametrize("stock_field", ["active_quantity", "activeQuantity"])
+def test_client_cannot_set_active_quantity_through_sku_update(
+    client,
+    db_session: Session,
+    product_factory,
+    auth_headers,
+    moderation_requests,
+    stock_field: str,
+):
+    product = product_factory(status=ProductStatus.MODERATED)
+    sku = create_existing_sku(db_session, product, active_quantity=11, reserved_quantity=4)
+
+    response = client.patch(
+        f"/api/v1/skus/{sku.id}",
+        json={"name": "128GB White", stock_field: 99},
+        headers=auth_headers(SELLER_ID),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["name"] == "128GB White"
+    assert body["active_quantity"] == 11
+    assert "stock_quantity" in body
+    assert body["reserved_quantity"] == 4
+
+    db_session.expire_all()
+    persisted_sku = db_session.get(SKU, sku.id)
+    persisted_product = db_session.get(Product, product.id)
+    assert persisted_sku.active_quantity == 11
+    assert persisted_sku.reserved_quantity == 4
+    assert persisted_sku.product_id == product.id
+    assert persisted_product.status == ProductStatus.ON_MODERATION
+    assert len(moderation_requests) == 1
+    assert moderation_requests[0]["json"]["event"] == "EDITED"
+
+
 def test_patch_hard_blocked_returns_403(
     client,
     db_session: Session,
