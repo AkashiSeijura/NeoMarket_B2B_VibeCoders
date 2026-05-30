@@ -791,3 +791,46 @@ Options considered:
 - Serializer/schema checks: wrong layer for DB-backed ownership, status, deleted-state, and reserve rules.
 
 Decision: keep delete validation in the SKU service as ordered early checks, then soft-delete and commit before best-effort event sends.
+
+---
+
+# US-B2B-02 Arbiter Fix: SKU Create Zero Stock
+
+External arbiter feedback addressed: `POST /api/v1/skus` no longer accepts stock as part of the create contract. The authoritative `flow/openapi.yaml` `SKUCreate` schema has no `active_quantity`/`activeQuantity` input, so `SKUCreate` in code now omits that field. Client-supplied `active_quantity` or `activeQuantity` is ignored at the request boundary and cannot affect persisted stock.
+
+New SKUs created through `POST /api/v1/skus` explicitly start with `active_quantity=0` and `reserved_quantity=0`. SKU responses still include `active_quantity` and `stock_quantity` as output fields. First-SKU `CREATED -> ON_MODERATION`, Moderation `CREATED` event delivery, owner checks, `HARD_BLOCKED` rejection, and UUID IDs remain unchanged.
+
+# US-B2B-02 Arbiter Fix Validation
+
+Pytest proof commands:
+
+```powershell
+.\scripts\b2b-workflow.ps1 pretest
+python -m pytest tests/api/test_skus.py -vv
+python -m pytest tests/api/test_products.py tests/api/test_skus.py tests/api/test_invoices.py tests/api/test_reservations.py tests/api/test_moderation_events.py tests/api/test_fulfillment.py -vv
+```
+
+Required scenario results:
+
+- `test_first_sku_transitions_product_to_on_moderation`: passed
+- `test_first_sku_emits_created_event_to_moderation`: passed
+- `test_second_sku_no_state_change`: passed
+- `test_add_sku_to_hard_blocked_returns_403`: passed
+- `test_client_cannot_set_active_quantity_through_sku_create[active_quantity]`: passed
+- `test_client_cannot_set_active_quantity_through_sku_create[activeQuantity]`: passed
+
+Suite results:
+
+- `.\scripts\b2b-workflow.ps1 pretest`: passed, no conflict markers found
+- `tests/api/test_skus.py`: 26 passed
+- `tests/api/test_products.py tests/api/test_skus.py tests/api/test_invoices.py tests/api/test_reservations.py tests/api/test_moderation_events.py tests/api/test_fulfillment.py`: 120 passed
+
+# ADR: SKU Create Stock Ownership
+
+Options considered:
+
+- Keep accepting stock in `SKUCreate`: rejected because it contradicts the authoritative OpenAPI contract and lets clients bypass invoice/inventory flows.
+- Reject unknown stock fields with a 400: valid from a strict-contract perspective, but larger than the existing boundary behavior because this codebase currently ignores extra create payload fields.
+- Remove stock from the create schema and explicitly persist zero stock: selected. It matches the OpenAPI request contract, keeps backward tolerance for extra JSON fields, and guarantees SKU stock can only become positive through the invoice/inventory flows.
+
+Decision: remove `active_quantity` from `SKUCreate` and set `active_quantity=0` inside SKU creation service code.
